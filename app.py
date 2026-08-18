@@ -109,8 +109,10 @@ with tab_overview:
         fig.update_traces(textinfo="label+value")
         fig.update_layout(margin=dict(t=10, b=10, l=10, r=10))
         treemap_event = st.plotly_chart(fig, use_container_width=True, on_select="rerun", key="allocation_treemap")
-        if treemap_event and treemap_event.selection and treemap_event.selection.points:
-            st.session_state["selected_ticker"] = treemap_event.selection.points[0]["label"]
+        clicked = treemap_event.selection.points[0]["label"] if treemap_event and treemap_event.selection and treemap_event.selection.points else None
+        if clicked and clicked != st.session_state.get("_last_treemap_ticker"):
+            st.session_state["selected_ticker"] = clicked
+        st.session_state["_last_treemap_ticker"] = clicked
     else:
         st.info("No live prices available yet for an allocation chart.")
 
@@ -129,8 +131,10 @@ with tab_overview:
         selection_mode="single-row",
         key="holdings_table",
     )
-    if table_event.selection.rows:
-        st.session_state["selected_ticker"] = holdings_df.iloc[table_event.selection.rows[0]]["Ticker"]
+    clicked = holdings_df.iloc[table_event.selection.rows[0]]["Ticker"] if table_event.selection.rows else None
+    if clicked and clicked != st.session_state.get("_last_table_ticker"):
+        st.session_state["selected_ticker"] = clicked
+    st.session_state["_last_table_ticker"] = clicked
 
     if closed_positions:
         with st.expander(f"Closed positions ({len(closed_positions)})"):
