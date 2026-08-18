@@ -35,6 +35,10 @@ def pct(value: float) -> str:
     return f"{sign}{value:.2f}%"
 
 
+def qty(value: float) -> str:
+    return f"{value:,.2f}"
+
+
 # ---------------------------------------------------------------- sidebar --
 st.sidebar.title("📊 revoscope")
 uploaded = st.sidebar.file_uploader("Upload a Revolut CSV export", type="csv")
@@ -98,21 +102,34 @@ with tab_overview:
 
     st.subheader("Allocation")
     if not holdings_df.empty and holdings_df["Market Value"].notna().any():
-        fig = px.treemap(
-            holdings_df.dropna(subset=["Market Value"]),
-            path=["Ticker"],
-            values="Market Value",
-            color="Unrealized %",
-            color_continuous_scale="RdYlGn",
-            color_continuous_midpoint=0,
-        )
-        fig.update_traces(textinfo="label+value")
-        fig.update_layout(margin=dict(t=10, b=10, l=10, r=10))
-        treemap_event = st.plotly_chart(fig, use_container_width=True, on_select="rerun", key="allocation_treemap")
-        clicked = treemap_event.selection.points[0]["label"] if treemap_event and treemap_event.selection and treemap_event.selection.points else None
-        if clicked and clicked != st.session_state.get("_last_treemap_ticker"):
-            st.session_state["selected_ticker"] = clicked
-        st.session_state["_last_treemap_ticker"] = clicked
+        treemap_col, badge_col = st.columns([5, 1])
+
+        with treemap_col:
+            fig = px.treemap(
+                holdings_df.dropna(subset=["Market Value"]),
+                path=["Ticker"],
+                values="Market Value",
+                color="Unrealized %",
+                color_continuous_scale="RdYlGn",
+                color_continuous_midpoint=0,
+            )
+            fig.update_traces(
+                texttemplate="%{label}<br>%{percentRoot:.0%}",
+                hovertemplate="<b>%{label}</b><br>Market Value: $%{value:,.2f}<br>Allocation: %{percentRoot:.1%}<br>Unrealized: %{color:.2f}%<extra></extra>",
+            )
+            fig.update_layout(margin=dict(t=10, b=10, l=10, r=10))
+            treemap_event = st.plotly_chart(fig, use_container_width=True, on_select="rerun", key="allocation_treemap")
+            clicked = treemap_event.selection.points[0]["label"] if treemap_event and treemap_event.selection and treemap_event.selection.points else None
+            if clicked and clicked != st.session_state.get("_last_treemap_ticker"):
+                st.session_state["selected_ticker"] = clicked
+            st.session_state["_last_treemap_ticker"] = clicked
+
+        with badge_col:
+            badge_ticker = st.session_state.get("selected_ticker")
+            badge_row = holdings_df[holdings_df["Ticker"] == badge_ticker] if badge_ticker else pd.DataFrame()
+            if not badge_row.empty:
+                st.markdown(f"**{badge_ticker}**")
+                st.metric("Unrealized P&L", money(badge_row["Unrealized P&L"].iloc[0]), pct(badge_row["Unrealized %"].iloc[0]))
     else:
         st.info("No live prices available yet for an allocation chart.")
 
@@ -121,7 +138,7 @@ with tab_overview:
     for col in ["Avg Entry", "Current Price", "Market Value", "Unrealized P&L", "Realized P&L", "Dividends"]:
         display_df[col] = display_df[col].map(lambda v: money(v) if pd.notna(v) else "—")
     display_df["Unrealized %"] = holdings_df["Unrealized %"].map(lambda v: pct(v) if pd.notna(v) else "—")
-    display_df["Quantity"] = holdings_df["Quantity"].map(lambda v: f"{v:.4f}".rstrip("0").rstrip("."))
+    display_df["Quantity"] = holdings_df["Quantity"].map(qty)
 
     table_event = st.dataframe(
         display_df,
@@ -162,7 +179,7 @@ with tab_detail:
         unrealized = market_value - pos.cost_basis if pd.notna(market_value) else float("nan")
 
         d1, d2, d3, d4, d5 = st.columns(5)
-        d1.metric("Quantity Held", f"{pos.quantity:.4f}".rstrip("0").rstrip("."))
+        d1.metric("Quantity Held", qty(pos.quantity))
         d2.metric("Avg Entry Price", money(pos.avg_price) if pos.is_open else "—")
         d3.metric("Current Price", money(current_price) if pd.notna(current_price) else "—")
         d4.metric("Unrealized P&L", money(unrealized) if pd.notna(unrealized) else "—")
@@ -191,7 +208,7 @@ with tab_detail:
             trades_display["date"] = trades_display["date"].dt.strftime("%Y-%m-%d %H:%M")
             trades_display["price"] = trades_display["price"].map(lambda v: money(v) if pd.notna(v) else "—")
             trades_display["amount"] = trades_display["amount"].map(money)
-            trades_display["quantity"] = trades_display["quantity"].map(lambda v: f"{v:.6f}".rstrip("0").rstrip(".") if pd.notna(v) else "—")
+            trades_display["quantity"] = trades_display["quantity"].map(lambda v: qty(v) if pd.notna(v) else "—")
             st.dataframe(
                 trades_display[["date", "type", "quantity", "price", "amount"]].rename(
                     columns={"date": "Date", "type": "Type", "quantity": "Quantity", "price": "Price", "amount": "Amount"}
@@ -215,7 +232,7 @@ with tab_transactions:
     log_display["date"] = log_display["date"].dt.strftime("%Y-%m-%d %H:%M")
     log_display["price"] = log_display["price"].map(lambda v: money(v) if pd.notna(v) else "—")
     log_display["amount"] = log_display["amount"].map(money)
-    log_display["quantity"] = log_display["quantity"].map(lambda v: f"{v:.6f}".rstrip("0").rstrip(".") if pd.notna(v) else "—")
+    log_display["quantity"] = log_display["quantity"].map(lambda v: qty(v) if pd.notna(v) else "—")
     st.dataframe(
         log_display[["date", "ticker", "type", "quantity", "price", "amount", "currency"]].rename(
             columns={"date": "Date", "ticker": "Ticker", "type": "Type", "quantity": "Quantity", "price": "Price", "amount": "Amount", "currency": "Currency"}
