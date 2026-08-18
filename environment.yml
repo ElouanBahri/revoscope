@@ -1,0 +1,12 @@
+name: revoscope
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pandas
+  - numpy
+  - pip
+  - pip:
+      - streamlit>=1.36
+      - plotly>=5.22
+      - yfinance>=0.2.40

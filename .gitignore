@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+
+# Personal financial data — never commit real exports
+data/raw/*.csv
+!data/raw/.gitkeep
+
+# Streamlit
+.streamlit/secrets.toml
+
+.DS_Store
