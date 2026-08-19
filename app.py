@@ -13,7 +13,7 @@ import streamlit as st
 
 from revoscope.parser import load_transactions
 from revoscope.portfolio import build_positions, cash_balance
-from revoscope.prices import get_live_prices, get_price_history
+from revoscope.prices import ALL_SECTORS, get_live_prices, get_price_history, get_sectors
 
 DEFAULT_CSV = Path(__file__).parent / "data" / "raw" / "transactions.csv"
 
@@ -89,6 +89,18 @@ total_realized = sum(p.realized_pnl for p in positions.values())
 total_dividends = sum(p.dividends for p in positions.values())
 account_value = total_market_value + cash
 
+sectors = get_sectors(tuple(sorted(open_positions)))
+sector_value = (
+    holdings_df.assign(Sector=holdings_df["Ticker"].map(sectors)).groupby("Sector")["Market Value"].sum(min_count=1)
+    if not holdings_df.empty
+    else pd.Series(dtype=float)
+)
+all_sector_names = list(dict.fromkeys(ALL_SECTORS + [s for s in sector_value.index if s not in ALL_SECTORS]))
+sector_df = pd.DataFrame({"Sector": all_sector_names})
+sector_df["Amount"] = sector_df["Sector"].map(sector_value).fillna(0.0)
+sector_df["Percentage"] = (sector_df["Amount"] / total_market_value * 100) if total_market_value else 0.0
+sector_df = sector_df.sort_values("Amount", ascending=False).reset_index(drop=True)
+
 # ------------------------------------------------------------------ tabs --
 tab_overview, tab_detail, tab_transactions = st.tabs(["Overview", "Stock Detail", "Transactions"])
 
@@ -132,6 +144,25 @@ with tab_overview:
                 st.metric("Unrealized P&L", money(badge_row["Unrealized P&L"].iloc[0]), pct(badge_row["Unrealized %"].iloc[0]))
     else:
         st.info("No live prices available yet for an allocation chart.")
+
+    st.subheader("Sector Allocation")
+    st.caption("Percentage of invested (non-cash) portfolio value per sector.")
+    bar_fig = px.bar(
+        sector_df,
+        x="Amount",
+        y="Sector",
+        orientation="h",
+        text=sector_df.apply(lambda r: f"${r['Amount']:,.2f} ({r['Percentage']:.1f}%)", axis=1),
+    )
+    bar_fig.update_traces(marker_color="#636EFA", textposition="outside")
+    bar_fig.update_layout(margin=dict(t=10, b=10, l=10, r=120), xaxis_title="Market Value ($)", yaxis_title=None)
+    bar_fig.update_yaxes(autorange="reversed")
+    st.plotly_chart(bar_fig, use_container_width=True)
+
+    sector_display = sector_df.copy()
+    sector_display["Amount"] = sector_display["Amount"].map(money)
+    sector_display["Percentage"] = sector_display["Percentage"].map(lambda v: f"{v:.2f}%")
+    st.dataframe(sector_display, use_container_width=True, hide_index=True)
 
     st.subheader("Holdings")
     display_df = holdings_df.copy()
@@ -177,14 +208,23 @@ with tab_detail:
         current_price = live_prices.get(selected, float("nan"))
         market_value = pos.quantity * current_price if pos.is_open and pd.notna(current_price) else float("nan")
         unrealized = market_value - pos.cost_basis if pd.notna(market_value) else float("nan")
+        unrealized_pct = (unrealized / pos.cost_basis * 100) if pos.cost_basis > 0 and pd.notna(unrealized) else float("nan")
+        realized_pct = (pos.realized_pnl / pos.cost_basis_sold * 100) if pos.cost_basis_sold > 0 else float("nan")
 
         d1, d2, d3, d4, d5 = st.columns(5)
         d1.metric("Quantity Held", qty(pos.quantity))
         d2.metric("Avg Entry Price", money(pos.avg_price) if pos.is_open else "—")
         d3.metric("Current Price", money(current_price) if pd.notna(current_price) else "—")
-        d4.metric("Unrealized P&L", money(unrealized) if pd.notna(unrealized) else "—")
-        d5.metric("Realized P&L", money(pos.realized_pnl))
+        d4.metric("Unrealized P&L", money(unrealized) if pd.notna(unrealized) else "—", pct(unrealized_pct) if pd.notna(unrealized_pct) else None)
+        d5.metric("Realized P&L", money(pos.realized_pnl), pct(realized_pct) if pd.notna(realized_pct) else None)
         st.caption(f"Dividends received: {money(pos.dividends)}")
+
+        st.subheader("Capital invested")
+        st.caption("Unrealized % is against the amount still invested; Realized % is against the cost basis of what's been sold.")
+        i1, i2, i3 = st.columns(3)
+        i1.metric("Total Invested (all-time)", money(pos.total_invested))
+        i2.metric("Currently Invested", money(pos.cost_basis))
+        i3.metric("Sold (cost basis)", money(pos.cost_basis_sold))
 
         st.subheader(f"{selected} price history with your trades")
         history = get_price_history(selected)

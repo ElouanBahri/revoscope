@@ -10,6 +10,34 @@ import yfinance as yf
 # mapping here, e.g. {"REVOLUT_SYMBOL": "YAHOO_SYMBOL"}.
 TICKER_OVERRIDES: dict[str, str] = {}
 
+# The 11 standard GICS sectors, so the sector-allocation view can show every
+# sector even at $0.
+ALL_SECTORS = [
+    "Information Technology",
+    "Financials",
+    "Health Care",
+    "Consumer Discretionary",
+    "Communication Services",
+    "Industrials",
+    "Consumer Staples",
+    "Energy",
+    "Utilities",
+    "Real Estate",
+    "Materials",
+]
+
+# Yahoo Finance reports sectors using Morningstar's names, not GICS. Map them
+# onto the GICS names above; entries absent here (Communication Services,
+# Industrials, Energy, Utilities, Real Estate) already match.
+_YAHOO_TO_GICS_SECTOR = {
+    "Technology": "Information Technology",
+    "Financial Services": "Financials",
+    "Healthcare": "Health Care",
+    "Consumer Cyclical": "Consumer Discretionary",
+    "Consumer Defensive": "Consumer Staples",
+    "Basic Materials": "Materials",
+}
+
 
 def _to_yahoo_symbol(ticker: str) -> str:
     return TICKER_OVERRIDES.get(ticker, ticker)
@@ -28,6 +56,22 @@ def get_live_prices(tickers: tuple[str, ...]) -> dict[str, float]:
         except Exception:
             prices[ticker] = float("nan")
     return prices
+
+
+@st.cache_data(ttl=86400, show_spinner="Fetching sector data...")
+def get_sectors(tickers: tuple[str, ...]) -> dict[str, str]:
+    """GICS sector per ticker. Falls back to 'Unknown' if the ticker's sector
+    isn't reported by Yahoo Finance.
+    """
+    sectors: dict[str, str] = {}
+    for ticker in tickers:
+        try:
+            info = yf.Ticker(_to_yahoo_symbol(ticker)).info
+            raw = info.get("sector") or "Unknown"
+            sectors[ticker] = _YAHOO_TO_GICS_SECTOR.get(raw, raw)
+        except Exception:
+            sectors[ticker] = "Unknown"
+    return sectors
 
 
 @st.cache_data(ttl=3600, show_spinner="Fetching price history...")

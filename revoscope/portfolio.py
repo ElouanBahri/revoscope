@@ -18,6 +18,7 @@ class Position:
     ticker: str
     quantity: float = 0.0
     cost_basis: float = 0.0
+    cost_basis_sold: float = 0.0
     realized_pnl: float = 0.0
     dividends: float = 0.0
     trades: pd.DataFrame = field(default_factory=pd.DataFrame)
@@ -29,6 +30,12 @@ class Position:
     @property
     def is_open(self) -> bool:
         return self.quantity > _OPEN_QTY_EPSILON
+
+    @property
+    def total_invested(self) -> float:
+        """All-time capital put into this ticker: what's still in the open
+        position plus the cost basis of the shares that have since been sold."""
+        return self.cost_basis + self.cost_basis_sold
 
 
 def build_positions(transactions: pd.DataFrame) -> dict[str, Position]:
@@ -53,6 +60,7 @@ def build_positions(transactions: pd.DataFrame) -> dict[str, Position]:
             cost_removed = row.quantity * avg_before
             pos.realized_pnl += row.amount - cost_removed
             pos.cost_basis -= cost_removed
+            pos.cost_basis_sold += cost_removed
             pos.quantity -= row.quantity
             trade_rows.setdefault(row.ticker, []).append(row)
         elif row.type == DIVIDEND_TYPE:
