@@ -219,12 +219,16 @@ with tab_detail:
         d5.metric("Realized P&L", money(pos.realized_pnl), pct(realized_pct) if pd.notna(realized_pct) else None)
         st.caption(f"Dividends received: {money(pos.dividends)}")
 
+        unrealized_pct_total = (unrealized / pos.total_invested * 100) if pos.total_invested > 0 and pd.notna(unrealized) else float("nan")
+        realized_pct_total = (pos.realized_pnl / pos.total_invested * 100) if pos.total_invested > 0 else float("nan")
+
         st.subheader("Capital invested")
-        st.caption("Unrealized % is against the amount still invested; Realized % is against the cost basis of what's been sold.")
-        i1, i2, i3 = st.columns(3)
+        st.caption("Unrealized/Realized % here are both against total capital ever invested in this stock.")
+        i1, i2, i3, i4 = st.columns(4)
         i1.metric("Total Invested (all-time)", money(pos.total_invested))
         i2.metric("Currently Invested", money(pos.cost_basis))
-        i3.metric("Sold (cost basis)", money(pos.cost_basis_sold))
+        i3.metric("Unrealized P&L", money(unrealized) if pd.notna(unrealized) else "—", pct(unrealized_pct_total) if pd.notna(unrealized_pct_total) else None)
+        i4.metric("Realized P&L", money(pos.realized_pnl), pct(realized_pct_total) if pd.notna(realized_pct_total) else None)
 
         st.subheader(f"{selected} price history with your trades")
         history = get_price_history(selected)
