@@ -12,6 +12,14 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from revoscope.parser import load_transactions
+from revoscope.performance import (
+    BENCHMARK_NAME,
+    BENCHMARK_TICKER,
+    build_portfolio_series,
+    cash_flow_adjusted_index,
+    compute_beta,
+    price_return_index,
+)
 from revoscope.portfolio import build_positions, cash_balance
 from revoscope.prices import ALL_SECTORS, get_live_prices, get_price_history, get_sectors
 
@@ -115,6 +123,52 @@ with tab_overview:
     c3.metric("Realized P&L", money(total_realized))
     c4.metric("Dividends Received", money(total_dividends))
     c5.metric("Cash Balance", money(cash))
+
+    st.subheader(f"Performance vs {BENCHMARK_NAME}")
+    all_trade_dates = transactions.loc[transactions["ticker"].notna(), "date"]
+    if not all_trade_dates.empty:
+        perf_start = all_trade_dates.min().normalize()
+        benchmark_hist = get_price_history(BENCHMARK_TICKER, start=perf_start.strftime("%Y-%m-%d"))
+        if not benchmark_hist.empty:
+            date_index = pd.DatetimeIndex(sorted(benchmark_hist["Date"].dt.normalize().unique()))
+            price_histories = {
+                ticker: get_price_history(ticker, start=perf_start.strftime("%Y-%m-%d")) for ticker in positions
+            }
+            portfolio_value, cash_flows = build_portfolio_series(positions, price_histories, date_index)
+            portfolio_index = cash_flow_adjusted_index(portfolio_value, cash_flows)
+            benchmark_series = benchmark_hist.set_index(benchmark_hist["Date"].dt.normalize())["Close"].reindex(
+                date_index, method="ffill"
+            )
+            benchmark_index = price_return_index(benchmark_series)
+
+            if not portfolio_index.dropna().empty:
+                perf_fig = go.Figure()
+                perf_fig.add_trace(
+                    go.Scatter(x=portfolio_index.index, y=portfolio_index, name="Your portfolio", line=dict(color="#636EFA"))
+                )
+                perf_fig.add_trace(
+                    go.Scatter(
+                        x=benchmark_index.index,
+                        y=benchmark_index,
+                        name=BENCHMARK_NAME,
+                        line=dict(color="#9AA0A6", dash="dash"),
+                    )
+                )
+                perf_fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), legend=dict(orientation="h"), yaxis_title="Growth of 100")
+                st.caption(
+                    f"Cash-flow-adjusted (time-weighted) performance since your first trade on {perf_start.date()}, "
+                    "indexed to 100. This neutralizes deposit/withdrawal timing so it's an apples-to-apples "
+                    f"comparison with {BENCHMARK_NAME} — the way professional performance reporting works."
+                )
+                st.plotly_chart(perf_fig, use_container_width=True)
+
+                pc1, pc2 = st.columns(2)
+                pc1.metric("Your portfolio", pct(portfolio_index.dropna().iloc[-1] - 100))
+                pc2.metric(BENCHMARK_NAME, pct(benchmark_index.dropna().iloc[-1] - 100))
+            else:
+                st.info("Not enough price history to compute portfolio performance yet.")
+        else:
+            st.info(f"Couldn't fetch {BENCHMARK_NAME} history right now.")
 
     st.subheader("Allocation")
     if not holdings_df.empty and holdings_df["Market Value"].notna().any():
@@ -233,6 +287,85 @@ with tab_detail:
         i2.metric("Currently Invested", money(pos.cost_basis))
         i3.metric("Unrealized P&L", money(unrealized) if pd.notna(unrealized) else "—", pct(unrealized_pct_total) if pd.notna(unrealized_pct_total) else None)
         i4.metric("Realized P&L", money(pos.realized_pnl), pct(realized_pct_total) if pd.notna(realized_pct_total) else None)
+
+        st.subheader(f"Beta vs {BENCHMARK_NAME}")
+        beta_stock_hist = get_price_history(selected, period="1y")
+        beta_benchmark_hist = get_price_history(BENCHMARK_TICKER, period="1y")
+        if not beta_stock_hist.empty and not beta_benchmark_hist.empty:
+            stock_returns = beta_stock_hist.set_index(beta_stock_hist["Date"].dt.normalize())["Close"].pct_change().dropna()
+            market_returns = beta_benchmark_hist.set_index(beta_benchmark_hist["Date"].dt.normalize())["Close"].pct_change().dropna()
+            beta, alpha, r_squared = compute_beta(stock_returns, market_returns)
+
+            if pd.notna(beta):
+                b1, b2, b3 = st.columns(3)
+                b1.metric("Beta", f"{beta:.2f}")
+                b2.metric("Alpha (daily)", f"{alpha * 100:.3f}%")
+                b3.metric("R²", f"{r_squared:.2f}")
+                st.caption(
+                    f"OLS regression of {selected}'s daily returns on {BENCHMARK_NAME}'s daily returns over the "
+                    "trailing year — the standard way beta is estimated. Beta above 1 means the stock has "
+                    "historically swung more than the market; below 1, less. R² shows how much of that daily "
+                    "movement the market actually explains."
+                )
+
+                aligned = pd.concat([market_returns.rename("Market"), stock_returns.rename("Stock")], axis=1, join="inner").dropna()
+                x_line = [aligned["Market"].min(), aligned["Market"].max()]
+                y_line = [alpha + beta * x for x in x_line]
+
+                scatter_fig = go.Figure()
+                scatter_fig.add_trace(
+                    go.Scatter(
+                        x=aligned["Market"],
+                        y=aligned["Stock"],
+                        mode="markers",
+                        name="Daily returns",
+                        marker=dict(color="#636EFA", size=5, opacity=0.6),
+                    )
+                )
+                scatter_fig.add_trace(
+                    go.Scatter(x=x_line, y=y_line, mode="lines", name=f"Fit (β={beta:.2f})", line=dict(color="#EF553B"))
+                )
+                scatter_fig.update_layout(
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    legend=dict(orientation="h"),
+                    xaxis_title=f"{BENCHMARK_NAME} daily return",
+                    yaxis_title=f"{selected} daily return",
+                    xaxis_tickformat=".1%",
+                    yaxis_tickformat=".1%",
+                )
+                st.plotly_chart(scatter_fig, use_container_width=True)
+            else:
+                st.info("Not enough overlapping price history to compute beta.")
+        else:
+            st.info("Not enough price history to compute beta.")
+
+        st.subheader(f"{selected} vs {BENCHMARK_NAME} since your first trade")
+        if not pos.trades.empty:
+            invest_start = pos.trades["date"].min().normalize()
+            perf_stock_hist = get_price_history(selected, start=invest_start.strftime("%Y-%m-%d"))
+            perf_benchmark_hist = get_price_history(BENCHMARK_TICKER, start=invest_start.strftime("%Y-%m-%d"))
+            if not perf_stock_hist.empty and not perf_benchmark_hist.empty:
+                stock_index = price_return_index(perf_stock_hist.set_index(perf_stock_hist["Date"].dt.normalize())["Close"])
+                bench_index = price_return_index(perf_benchmark_hist.set_index(perf_benchmark_hist["Date"].dt.normalize())["Close"])
+
+                perf_fig = go.Figure()
+                perf_fig.add_trace(go.Scatter(x=stock_index.index, y=stock_index, name=selected, line=dict(color="#636EFA")))
+                perf_fig.add_trace(
+                    go.Scatter(x=bench_index.index, y=bench_index, name=BENCHMARK_NAME, line=dict(color="#9AA0A6", dash="dash"))
+                )
+                perf_fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), legend=dict(orientation="h"), yaxis_title="Growth of 100")
+                st.caption(
+                    f"Price only (excludes dividends), indexed to 100 on {invest_start.date()} — your first trade "
+                    f"in {selected}. Assumes a single buy-and-hold from that date, so it won't reflect the exact "
+                    "return of positions built up over several trades."
+                )
+                st.plotly_chart(perf_fig, use_container_width=True)
+
+                sc1, sc2 = st.columns(2)
+                sc1.metric(selected, pct(stock_index.dropna().iloc[-1] - 100))
+                sc2.metric(BENCHMARK_NAME, pct(bench_index.dropna().iloc[-1] - 100))
+            else:
+                st.info("Not enough price history for this comparison.")
 
         st.subheader(f"{selected} price history with your trades")
         history = get_price_history(selected)

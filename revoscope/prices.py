@@ -43,6 +43,12 @@ def _to_yahoo_symbol(ticker: str) -> str:
     return TICKER_OVERRIDES.get(ticker, ticker)
 
 
+def _strip_tz(dates: pd.Series) -> pd.Series:
+    """yfinance returns tz-aware timestamps (exchange local time); strip that
+    so dates line up cleanly against our tz-naive transaction dates."""
+    return dates.dt.tz_localize(None) if dates.dt.tz is not None else dates
+
+
 @st.cache_data(ttl=300, show_spinner="Fetching live prices...")
 def get_live_prices(tickers: tuple[str, ...]) -> dict[str, float]:
     """Latest close price per ticker. Missing/unresolvable tickers map to NaN
@@ -75,11 +81,17 @@ def get_sectors(tickers: tuple[str, ...]) -> dict[str, str]:
 
 
 @st.cache_data(ttl=3600, show_spinner="Fetching price history...")
-def get_price_history(ticker: str, period: str = "6mo") -> pd.DataFrame:
+def get_price_history(ticker: str, period: str = "6mo", start: str | None = None) -> pd.DataFrame:
     """Daily close-price history for one ticker, or an empty DataFrame if
-    unavailable."""
+    unavailable. Pass `start` (as 'YYYY-MM-DD') for a fixed start date
+    instead of a relative `period` — used for since-investment and beta
+    comparisons against a fixed benchmark window.
+    """
     try:
-        history = yf.Ticker(_to_yahoo_symbol(ticker)).history(period=period)
-        return history.reset_index()[["Date", "Close"]]
+        yf_ticker = yf.Ticker(_to_yahoo_symbol(ticker))
+        history = yf_ticker.history(start=start) if start else yf_ticker.history(period=period)
+        df = history.reset_index()[["Date", "Close"]]
+        df["Date"] = _strip_tz(df["Date"])
+        return df
     except Exception:
         return pd.DataFrame(columns=["Date", "Close"])
