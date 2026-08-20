@@ -127,6 +127,16 @@ sector_df = sector_df.sort_values("Amount", ascending=False).reset_index(drop=Tr
 tab_overview, tab_detail, tab_transactions = st.tabs(["Overview", "Stock Detail", "Transactions"])
 
 with tab_overview:
+    failed_price_tickers = sorted(
+        t for t in open_positions if pd.isna(live_prices.get(t, float("nan")))
+    )
+    if failed_price_tickers:
+        st.warning(
+            f"Couldn't fetch a live price for: {', '.join(failed_price_tickers)}. Account Value, "
+            "Unrealized P&L, and the charts below exclude them until the next successful fetch — try "
+            "the sidebar's 🔄 **Refresh live prices** button; Yahoo Finance sometimes rate-limits requests."
+        )
+
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Account Value", money(account_value))
     c2.metric("Unrealized P&L", money(total_unrealized), pct(total_unrealized / total_cost_basis * 100) if total_cost_basis else None)
@@ -219,7 +229,10 @@ with tab_overview:
             st.info(f"Couldn't fetch {BENCHMARK_NAME} history right now.")
 
     st.subheader("Sector Allocation")
-    st.caption("Percentage of invested (non-cash) portfolio value per sector.")
+    st.caption(
+        "Percentage of invested (non-cash) portfolio value per sector. \"Unknown\" means Yahoo Finance "
+        "didn't return sector data for that ticker — often a temporary fetch issue rather than a real gap."
+    )
     bar_fig = px.bar(
         sector_df,
         x="Amount",
