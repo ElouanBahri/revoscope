@@ -8,9 +8,14 @@ separately from Yahoo Finance via `yfinance`.
 ## Setup
 
 ```bash
-conda env create -f environment.yml
+conda env create -f environment-dev.yml
 conda activate revoscope
 ```
+
+(`requirements.txt` is what Streamlit Community Cloud installs from for the
+deployed app; `environment-dev.yml` is only for local conda setup — it's
+named that way, instead of `environment.yml`, so Streamlit Cloud doesn't
+pick it up too and warn about having two requirements files.)
 
 ## Get your data
 

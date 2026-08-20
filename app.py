@@ -49,10 +49,20 @@ def qty(value: float) -> str:
 
 # ---------------------------------------------------------------- sidebar --
 st.sidebar.title("📊 revoscope")
+st.sidebar.caption(
+    "An interactive dashboard for your Revolut investing portfolio — P&L, "
+    "allocation, and performance vs the S&P 500."
+)
 uploaded = st.sidebar.file_uploader("Upload a Revolut CSV export", type="csv")
 if st.sidebar.button("🔄 Refresh live prices"):
     get_live_prices.clear()
     get_price_history.clear()
+
+st.sidebar.divider()
+st.sidebar.caption(
+    "Built by **Elouan Bahri**  \n"
+    "Questions? [elouan.bahri1@berkeley.edu](mailto:elouan.bahri1@berkeley.edu)"
+)
 
 source = uploaded if uploaded is not None else DEFAULT_CSV
 if uploaded is None and not DEFAULT_CSV.exists():
