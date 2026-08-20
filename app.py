@@ -48,7 +48,11 @@ if st.sidebar.button("🔄 Refresh live prices"):
 
 source = uploaded if uploaded is not None else DEFAULT_CSV
 if uploaded is None and not DEFAULT_CSV.exists():
-    st.error(f"No CSV found at {DEFAULT_CSV}. Upload one from the sidebar.")
+    st.info(
+        "👋 **Upload your Revolut transactions CSV in the sidebar to get started.**\n\n"
+        "In the Revolut app: **Invest → Statements → Export → CSV**, "
+        "then upload the file here."
+    )
     st.stop()
 
 transactions = _load(source)
