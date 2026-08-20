@@ -15,8 +15,8 @@ from revoscope.parser import load_transactions
 from revoscope.performance import (
     BENCHMARK_NAME,
     BENCHMARK_TICKER,
+    build_benchmark_shadow_series,
     build_portfolio_series,
-    cash_flow_adjusted_index,
     compute_beta,
     price_return_index,
 )
@@ -134,52 +134,6 @@ with tab_overview:
     c4.metric("Dividends Received", money(total_dividends))
     c5.metric("Cash Balance", money(cash))
 
-    st.subheader(f"Performance vs {BENCHMARK_NAME}")
-    all_trade_dates = transactions.loc[transactions["ticker"].notna(), "date"]
-    if not all_trade_dates.empty:
-        perf_start = all_trade_dates.min().normalize()
-        benchmark_hist = get_price_history(BENCHMARK_TICKER, start=perf_start.strftime("%Y-%m-%d"))
-        if not benchmark_hist.empty:
-            date_index = pd.DatetimeIndex(sorted(benchmark_hist["Date"].dt.normalize().unique()))
-            price_histories = {
-                ticker: get_price_history(ticker, start=perf_start.strftime("%Y-%m-%d")) for ticker in positions
-            }
-            portfolio_value, cash_flows = build_portfolio_series(positions, price_histories, date_index)
-            portfolio_index = cash_flow_adjusted_index(portfolio_value, cash_flows)
-            benchmark_series = benchmark_hist.set_index(benchmark_hist["Date"].dt.normalize())["Close"].reindex(
-                date_index, method="ffill"
-            )
-            benchmark_index = price_return_index(benchmark_series)
-
-            if not portfolio_index.dropna().empty:
-                perf_fig = go.Figure()
-                perf_fig.add_trace(
-                    go.Scatter(x=portfolio_index.index, y=portfolio_index, name="Your portfolio", line=dict(color="#636EFA"))
-                )
-                perf_fig.add_trace(
-                    go.Scatter(
-                        x=benchmark_index.index,
-                        y=benchmark_index,
-                        name=BENCHMARK_NAME,
-                        line=dict(color="#9AA0A6", dash="dash"),
-                    )
-                )
-                perf_fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), legend=dict(orientation="h"), yaxis_title="Growth of 100")
-                st.caption(
-                    f"Cash-flow-adjusted (time-weighted) performance since your first trade on {perf_start.date()}, "
-                    "indexed to 100. This neutralizes deposit/withdrawal timing so it's an apples-to-apples "
-                    f"comparison with {BENCHMARK_NAME} — the way professional performance reporting works."
-                )
-                st.plotly_chart(perf_fig, use_container_width=True)
-
-                pc1, pc2 = st.columns(2)
-                pc1.metric("Your portfolio", pct(portfolio_index.dropna().iloc[-1] - 100))
-                pc2.metric(BENCHMARK_NAME, pct(benchmark_index.dropna().iloc[-1] - 100))
-            else:
-                st.info("Not enough price history to compute portfolio performance yet.")
-        else:
-            st.info(f"Couldn't fetch {BENCHMARK_NAME} history right now.")
-
     st.subheader("Allocation")
     if not holdings_df.empty and holdings_df["Market Value"].notna().any():
         treemap_col, badge_col = st.columns([5, 1])
@@ -212,6 +166,57 @@ with tab_overview:
                 st.metric("Unrealized P&L", money(badge_row["Unrealized P&L"].iloc[0]), pct(badge_row["Unrealized %"].iloc[0]))
     else:
         st.info("No live prices available yet for an allocation chart.")
+
+    st.subheader(f"What if you'd bought {BENCHMARK_NAME} instead?")
+    all_trade_dates = transactions.loc[transactions["ticker"].notna(), "date"]
+    if not all_trade_dates.empty:
+        perf_start = all_trade_dates.min().normalize()
+        benchmark_hist = get_price_history(BENCHMARK_TICKER, start=perf_start.strftime("%Y-%m-%d"))
+        if not benchmark_hist.empty:
+            date_index = pd.DatetimeIndex(sorted(benchmark_hist["Date"].dt.normalize().unique()))
+            price_histories = {
+                ticker: get_price_history(ticker, start=perf_start.strftime("%Y-%m-%d")) for ticker in positions
+            }
+            portfolio_value, cash_flows = build_portfolio_series(positions, price_histories, date_index)
+            benchmark_price_series = benchmark_hist.set_index(benchmark_hist["Date"].dt.normalize())["Close"]
+            shadow_value = build_benchmark_shadow_series(cash_flows, benchmark_price_series)
+
+            if not portfolio_value.dropna().empty:
+                perf_fig = go.Figure()
+                perf_fig.add_trace(
+                    go.Scatter(x=portfolio_value.index, y=portfolio_value, name="Your portfolio", line=dict(color="#636EFA"))
+                )
+                perf_fig.add_trace(
+                    go.Scatter(
+                        x=shadow_value.index,
+                        y=shadow_value,
+                        name=f"If {BENCHMARK_NAME} instead",
+                        line=dict(color="#9AA0A6", dash="dash"),
+                    )
+                )
+                perf_fig.update_layout(
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    legend=dict(orientation="h"),
+                    yaxis_title="Value ($)",
+                    yaxis_tickprefix="$",
+                )
+                st.caption(
+                    f"Simulates putting every dollar you actually invested — same cost basis, same dates, same "
+                    f"deposits/withdrawals since {perf_start.date()} — into {BENCHMARK_NAME} instead of your stock "
+                    "picks. Both lines are real dollars, so they're directly comparable without any indexing."
+                )
+                st.plotly_chart(perf_fig, use_container_width=True)
+
+                final_actual = portfolio_value.dropna().iloc[-1]
+                final_shadow = shadow_value.dropna().iloc[-1]
+                pc1, pc2, pc3 = st.columns(3)
+                pc1.metric("Your portfolio", money(final_actual))
+                pc2.metric(f"If {BENCHMARK_NAME} instead", money(final_shadow))
+                pc3.metric("Difference", money(final_actual - final_shadow))
+            else:
+                st.info("Not enough price history to compute this comparison yet.")
+        else:
+            st.info(f"Couldn't fetch {BENCHMARK_NAME} history right now.")
 
     st.subheader("Sector Allocation")
     st.caption("Percentage of invested (non-cash) portfolio value per sector.")

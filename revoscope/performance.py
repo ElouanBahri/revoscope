@@ -1,5 +1,5 @@
-"""Performance analytics: CAPM beta regression and cash-flow-adjusted
-portfolio performance versus a benchmark (S&P 500).
+"""Performance analytics: CAPM beta regression and a benchmark comparison
+that simulates buying the S&P 500 instead of your actual stock picks.
 """
 from __future__ import annotations
 
@@ -45,33 +45,18 @@ def price_return_index(prices: pd.Series) -> pd.Series:
     return prices / prices.iloc[0] * 100
 
 
-def cash_flow_adjusted_index(values: pd.Series, cash_flows: pd.Series) -> pd.Series:
-    """Time-weighted-return-style cumulative index (100 = start) from a daily
-    market-value series and same-day external cash flows into/out of the
-    position (positive = a buy, negative = a sell).
-
-    Chain-linking daily returns this way — netting out each day's cash flow
-    before measuring that day's price move — is the standard way pros
-    benchmark a portfolio's performance without deposits/withdrawals
-    distorting the comparison.
+def build_benchmark_shadow_series(cash_flows: pd.Series, benchmark_prices: pd.Series) -> pd.Series:
+    """Simulate investing every dollar actually moved into/out of stocks
+    (`cash_flows`, aligned to the same date index, positive = a buy,
+    negative = a sell) into the benchmark instead, on the same dates — same
+    cost basis, same cash-flow timing, just a different asset. Returns the
+    resulting hypothetical benchmark portfolio value, directly comparable in
+    dollars to the real portfolio's market-value series.
     """
-    cash_flows = cash_flows.reindex(values.index).fillna(0.0)
-    index = pd.Series(index=values.index, dtype=float)
-    if values.empty:
-        return index
-    index.iloc[0] = 100.0
-    for i in range(1, len(values)):
-        prev_adjusted = values.iloc[i - 1] + cash_flows.iloc[i]
-        # Guard against near-total exits: if a sale leaves only a few cents of
-        # "base" behind, dividing by it turns ordinary rounding noise between
-        # the sale proceeds and the prior close into a spurious ±100%+ swing
-        # that would otherwise permanently distort the whole chained index.
-        if prev_adjusted > max(1.0, 0.01 * values.iloc[i - 1]):
-            daily_return = (values.iloc[i] - prev_adjusted) / prev_adjusted
-        else:
-            daily_return = 0.0
-        index.iloc[i] = index.iloc[i - 1] * (1 + daily_return)
-    return index
+    price = benchmark_prices.reindex(cash_flows.index).ffill()
+    shares_bought_or_sold = cash_flows / price
+    shares_held = shares_bought_or_sold.cumsum()
+    return shares_held * price
 
 
 def build_portfolio_series(
