@@ -6,6 +6,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .parser import BUY_TYPES, SELL_TYPES
 from .portfolio import Position
 
 BENCHMARK_TICKER = "^GSPC"
@@ -74,11 +75,11 @@ def build_portfolio_series(
     for ticker, pos in positions.items():
         if pos.trades.empty:
             continue
-        trades = pos.trades[pos.trades["type"].isin(["BUY - MARKET", "SELL - MARKET"])].copy()
+        trades = pos.trades[pos.trades["type"].isin(BUY_TYPES | SELL_TYPES)].copy()
         if trades.empty:
             continue
         trades["date"] = _normalize_naive(trades["date"])
-        sign = trades["type"].map({"BUY - MARKET": 1.0, "SELL - MARKET": -1.0})
+        sign = trades["type"].apply(lambda t: 1.0 if t in BUY_TYPES else -1.0)
 
         shares_delta = (trades["quantity"] * sign).groupby(trades["date"]).sum()
         shares_held = shares_delta.reindex(date_index, fill_value=0.0).cumsum()

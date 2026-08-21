@@ -11,7 +11,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from revoscope.parser import load_transactions
+from revoscope.parser import BUY_TYPES, SELL_TYPES, find_unknown_types, load_transactions
 from revoscope.performance import (
     BENCHMARK_NAME,
     BENCHMARK_TICKER,
@@ -74,6 +74,14 @@ if uploaded is None and not DEFAULT_CSV.exists():
     st.stop()
 
 transactions = _load(source)
+
+unknown_types = find_unknown_types(transactions)
+if unknown_types:
+    st.warning(
+        f"Found transaction type(s) revoscope doesn't recognize yet: **{', '.join(unknown_types)}**. "
+        "Those rows are skipped for now, so any positions/cash they affect may be understated. "
+        "Let Elouan know (see sidebar) and they can be added."
+    )
 
 # --------------------------------------------------------------- compute --
 positions = build_positions(transactions)
@@ -400,8 +408,12 @@ with tab_detail:
         if not history.empty:
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=history["Date"], y=history["Close"], mode="lines", name="Close price", line=dict(color="#636EFA")))
-            buys = pos.trades[pos.trades["type"] == "BUY - MARKET"] if not pos.trades.empty else pd.DataFrame()
-            sells = pos.trades[pos.trades["type"] == "SELL - MARKET"] if not pos.trades.empty else pd.DataFrame()
+            buys = pos.trades[pos.trades["type"].isin(BUY_TYPES)] if not pos.trades.empty else pd.DataFrame()
+            sells = pos.trades[pos.trades["type"].isin(SELL_TYPES)].copy() if not pos.trades.empty else pd.DataFrame()
+            if not sells.empty:
+                # Bond redemptions carry no per-share price in the export;
+                # derive one from the payout so the marker still plots.
+                sells["price"] = sells["price"].fillna(sells["amount"] / sells["quantity"])
             if not buys.empty:
                 fig.add_trace(go.Scatter(x=buys["date"], y=buys["price"], mode="markers", name="Buy", marker=dict(color="green", size=10, symbol="triangle-up")))
             if not sells.empty:

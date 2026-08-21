@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from .parser import DIVIDEND_TYPE
+from .parser import BUY_TYPES, INCOME_TYPES, SELL_TYPES
 
 _OPEN_QTY_EPSILON = 1e-6
 
@@ -51,11 +51,11 @@ def build_positions(transactions: pd.DataFrame) -> dict[str, Position]:
 
         pos = positions.setdefault(row.ticker, Position(ticker=row.ticker))
 
-        if row.type == "BUY - MARKET":
+        if row.type in BUY_TYPES:
             pos.cost_basis += row.amount
             pos.quantity += row.quantity
             trade_rows.setdefault(row.ticker, []).append(row)
-        elif row.type == "SELL - MARKET":
+        elif row.type in SELL_TYPES:
             avg_before = pos.avg_price
             cost_removed = row.quantity * avg_before
             pos.realized_pnl += row.amount - cost_removed
@@ -63,7 +63,7 @@ def build_positions(transactions: pd.DataFrame) -> dict[str, Position]:
             pos.cost_basis_sold += cost_removed
             pos.quantity -= row.quantity
             trade_rows.setdefault(row.ticker, []).append(row)
-        elif row.type == DIVIDEND_TYPE:
+        elif row.type in INCOME_TYPES:
             pos.dividends += row.amount
             trade_rows.setdefault(row.ticker, []).append(row)
 
@@ -74,16 +74,17 @@ def build_positions(transactions: pd.DataFrame) -> dict[str, Position]:
 
 
 def cash_balance(transactions: pd.DataFrame) -> float:
-    """Net cash movement across the whole account (buys, sells, dividends,
-    top-ups, withdrawals, and stock-promotion rewards/clawbacks).
+    """Net cash movement across the whole account: buys/sells (stocks, ETFs,
+    bonds), dividends/coupons, redemptions, top-ups, withdrawals, and
+    rewards/clawbacks.
 
     Every type except BUY already carries the correct sign in `amount`
-    (sells/dividends/top-ups/rewards are positive inflows; withdrawals and
+    (sells/income/top-ups/rewards are positive inflows; withdrawals and
     clawbacks arrive pre-negated from Revolut).
     """
     cash = 0.0
     for row in transactions.itertuples(index=False):
-        if row.type == "BUY - MARKET":
+        if row.type in BUY_TYPES:
             cash -= row.amount
         else:
             cash += row.amount

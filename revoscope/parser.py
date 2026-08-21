@@ -1,18 +1,34 @@
-"""Parse Revolut stock-trading CSV exports into a clean transactions DataFrame."""
+"""Parse Revolut trading CSV exports into a clean transactions DataFrame.
+
+Revolut's "Invest" export covers stocks, ETFs, and bonds through the same
+CSV shape, differing mainly in which `Type` values show up (e.g. bonds add
+BOND COUPON / BOND REDEMPTION instead of DIVIDEND / SELL).
+"""
 from __future__ import annotations
 
 import re
 
 import pandas as pd
 
-STOCK_TRADE_TYPES = {"BUY - MARKET", "SELL - MARKET"}
-DIVIDEND_TYPE = "DIVIDEND"
+# Opening a position (adds shares/units).
+BUY_TYPES = {"BUY - MARKET", "BUY - LIMIT"}
+# Closing/reducing a position. A bond redemption behaves exactly like a sell
+# for accounting purposes: it returns cash and zeroes out the holding.
+SELL_TYPES = {"SELL - MARKET", "SELL - LIMIT", "BOND REDEMPTION"}
+TRADE_TYPES = BUY_TYPES | SELL_TYPES
+
+# Income paid out on a held position without changing quantity.
+INCOME_TYPES = {"DIVIDEND", "BOND COUPON"}
+
 CASH_TYPES = {
     "CASH TOP-UP",
     "CASH WITHDRAWAL",
     "STOCKS PROMOTION REWARD",
     "STOCKS PROMOTION CLAWBACK",
+    "REWARD",
 }
+
+KNOWN_TYPES = TRADE_TYPES | INCOME_TYPES | CASH_TYPES
 
 _COLUMN_MAP = {
     "Date": "date",
@@ -46,9 +62,27 @@ def load_transactions(csv_path: str) -> pd.DataFrame:
     """
     df = pd.read_csv(csv_path)
     df = df.rename(columns=_COLUMN_MAP)
-    df["date"] = pd.to_datetime(df["date"])
+    # Revolut exports mix microsecond-precision and whole-second timestamps
+    # in the same file (e.g. "2025-01-01T18:35:57.965947Z" next to
+    # "2025-01-02T07:01:29Z"). A plain pd.to_datetime() infers one fixed
+    # format from the first rows and then raises on the rest; ISO8601 mode
+    # accepts either precision per-row.
+    df["date"] = pd.to_datetime(df["date"], format="ISO8601")
     df["price"] = df["price"].apply(_parse_money)
     df["amount"] = df["amount"].apply(_parse_money)
     df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce")
     df["fx_rate"] = pd.to_numeric(df["fx_rate"], errors="coerce")
     return df.sort_values("date").reset_index(drop=True)
+
+
+def find_unknown_types(transactions: pd.DataFrame) -> list[str]:
+    """Transaction types this file uses that revoscope doesn't recognize.
+
+    New Revolut transaction types (or an export from an account with
+    instruments/features this app hasn't seen yet) would otherwise be
+    silently excluded from P&L — this lets the app flag them instead, for
+    any CSV, rather than requiring each new type to be discovered by a bug
+    report first.
+    """
+    unknown = transactions.loc[~transactions["type"].isin(KNOWN_TYPES), "type"]
+    return sorted(unknown.dropna().unique())
