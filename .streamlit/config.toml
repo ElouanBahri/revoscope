@@ -1,0 +1,29 @@
+[theme]
+base = "dark"
+primaryColor = "#5b8def"
+backgroundColor = "#0a0b0d"
+secondaryBackgroundColor = "#131417"
+textColor = "#f2f3f5"
+borderColor = "#24262b"
+linkColor = "#5b8def"
+greenColor = "#22c55e"
+redColor = "#ef4444"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+baseRadius = "0.6rem"
+buttonRadius = "0.6rem"
+showWidgetBorder = true
+showSidebarBorder = true
+dataframeBorderColor = "#24262b"
+metricValueFontWeight = 700
+headingFontWeights = [700, 600, 600, 600, 600, 600]
+
+# Overrides applied if a visitor's browser/settings prefer light mode —
+# matches the same palette used on elouanbahri.com for consistency.
+[theme.light]
+primaryColor = "#2f6feb"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f7f8fa"
+textColor = "#0a0b0d"
+borderColor = "#e7e9ec"
+linkColor = "#2f6feb"
+dataframeBorderColor = "#e7e9ec"

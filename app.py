@@ -47,6 +47,19 @@ def qty(value: float) -> str:
     return f"{value:,.2f}"
 
 
+def style_fig(fig: go.Figure) -> go.Figure:
+    """Apply a template matching the active light/dark theme and make the
+    chart background transparent, so it blends into the Streamlit page
+    instead of showing Plotly's own (light-by-default) background."""
+    is_light = st.context.theme.type == "light"
+    fig.update_layout(
+        template="plotly_white" if is_light else "plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    return fig
+
+
 # ---------------------------------------------------------------- sidebar --
 st.sidebar.title("📊 revoscope")
 st.sidebar.caption(
@@ -170,6 +183,7 @@ with tab_overview:
                 hovertemplate="<b>%{label}</b><br>Market Value: $%{value:,.2f}<br>Allocation: %{percentRoot:.1%}<br>Unrealized: %{color:.2f}%<extra></extra>",
             )
             fig.update_layout(margin=dict(t=10, b=10, l=10, r=10))
+            style_fig(fig)
             treemap_event = st.plotly_chart(fig, use_container_width=True, on_select="rerun", key="allocation_treemap")
             clicked = treemap_event.selection.points[0]["label"] if treemap_event and treemap_event.selection and treemap_event.selection.points else None
             if clicked and clicked != st.session_state.get("_last_treemap_ticker"):
@@ -218,6 +232,7 @@ with tab_overview:
                     yaxis_title="Value ($)",
                     yaxis_tickprefix="$",
                 )
+                style_fig(perf_fig)
                 st.caption(
                     f"Simulates putting every dollar you actually invested — same cost basis, same dates, same "
                     f"deposits/withdrawals since {perf_start.date()} — into {BENCHMARK_NAME} instead of your stock "
@@ -251,6 +266,7 @@ with tab_overview:
     bar_fig.update_traces(marker_color="#636EFA", textposition="outside")
     bar_fig.update_layout(margin=dict(t=10, b=10, l=10, r=120), xaxis_title="Market Value ($)", yaxis_title=None)
     bar_fig.update_yaxes(autorange="reversed")
+    style_fig(bar_fig)
     st.plotly_chart(bar_fig, use_container_width=True)
 
     sector_display = sector_df.copy()
@@ -369,6 +385,7 @@ with tab_detail:
                     xaxis_tickformat=".1%",
                     yaxis_tickformat=".1%",
                 )
+                style_fig(scatter_fig)
                 st.plotly_chart(scatter_fig, use_container_width=True)
             else:
                 st.info("Not enough overlapping price history to compute beta.")
@@ -390,6 +407,7 @@ with tab_detail:
                     go.Scatter(x=bench_index.index, y=bench_index, name=BENCHMARK_NAME, line=dict(color="#9AA0A6", dash="dash"))
                 )
                 perf_fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), legend=dict(orientation="h"), yaxis_title="Growth of 100")
+                style_fig(perf_fig)
                 st.caption(
                     f"Price only (excludes dividends), indexed to 100 on {invest_start.date()} — your first trade "
                     f"in {selected}. Assumes a single buy-and-hold from that date, so it won't reflect the exact "
@@ -419,6 +437,7 @@ with tab_detail:
             if not sells.empty:
                 fig.add_trace(go.Scatter(x=sells["date"], y=sells["price"], mode="markers", name="Sell", marker=dict(color="red", size=10, symbol="triangle-down")))
             fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), legend=dict(orientation="h"))
+            style_fig(fig)
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No price history available for this ticker.")
