@@ -6,9 +6,19 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-# If a Revolut ticker doesn't resolve on Yahoo Finance, add the correct
-# mapping here, e.g. {"REVOLUT_SYMBOL": "YAHOO_SYMBOL"}.
-TICKER_OVERRIDES: dict[str, str] = {}
+# Revolut exports the bare ticker with no exchange suffix, but Yahoo Finance
+# requires one for anything not listed on a US exchange (US stocks like AAPL
+# resolve as-is; a European UCITS ETF like VUAA does not). If a ticker fails
+# to resolve, look it up on https://finance.yahoo.com/lookup and add the
+# Yahoo-qualified symbol here — matching the exchange/currency the position
+# was actually bought in keeps prices consistent with the recorded cost
+# basis (e.g. a EUR purchase should map to the Xetra ".DE" listing, not a
+# GBP one on the LSE, even though both technically track the same fund).
+TICKER_OVERRIDES: dict[str, str] = {
+    "VUAA": "VUAA.DE",  # Vanguard S&P 500 UCITS ETF (Acc), Xetra
+    "EUNM": "EUNM.DE",  # iShares Core MSCI EM IMI UCITS ETF, Xetra
+    "1TY": "1TY.DE",  # short-duration bond ETF, Xetra
+}
 
 # The 11 standard GICS sectors, so the sector-allocation view can show every
 # sector even at $0.
@@ -57,8 +67,13 @@ def get_live_prices(tickers: tuple[str, ...]) -> dict[str, float]:
     prices: dict[str, float] = {}
     for ticker in tickers:
         try:
-            history = yf.Ticker(_to_yahoo_symbol(ticker)).history(period="1d")
-            prices[ticker] = float(history["Close"].iloc[-1]) if not history.empty else float("nan")
+            # A few days, not one: some exchanges report today's close with
+            # a lag, and a bare period="1d" fetch can land on that one row
+            # while it's still NaN, showing "no price" for an otherwise
+            # perfectly resolvable ticker until the feed catches up.
+            history = yf.Ticker(_to_yahoo_symbol(ticker)).history(period="5d")
+            closes = history["Close"].dropna()
+            prices[ticker] = float(closes.iloc[-1]) if not closes.empty else float("nan")
         except Exception:
             prices[ticker] = float("nan")
     return prices
@@ -90,7 +105,7 @@ def get_price_history(ticker: str, period: str = "6mo", start: str | None = None
     try:
         yf_ticker = yf.Ticker(_to_yahoo_symbol(ticker))
         history = yf_ticker.history(start=start) if start else yf_ticker.history(period=period)
-        df = history.reset_index()[["Date", "Close"]]
+        df = history.reset_index()[["Date", "Close"]].dropna(subset=["Close"])
         df["Date"] = _strip_tz(df["Date"])
         return df
     except Exception:
