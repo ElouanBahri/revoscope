@@ -21,6 +21,7 @@ from revoscope.bonds import (
     get_treasury_security,
     is_bond_position,
     isin_to_us_cusip,
+    price_from_yield_curve,
 )
 from revoscope.parser import BUY_TYPES, SELL_TYPES, find_unknown_types, load_transactions
 from revoscope.performance import (
@@ -127,15 +128,24 @@ open_bond_tickers = set(bond_positions) & set(open_positions)
 
 # Yahoo Finance has no data at all for bond ISINs/CUSIPs (unlike stocks/ETFs,
 # which just occasionally fail to fetch) — pull live prices only for
-# non-bond tickers, and price open bonds at par ($100 face) instead, since
-# there's no free live bond-pricing source. This is a stated approximation,
-# not a real quote: short-duration bonds trade close to par, but this won't
-# reflect real secondary-market moves for anything further from maturity.
+# non-bond tickers. Open Treasury bonds are priced by discounting their
+# remaining cash flows at today's actual market yield (from the public
+# yield curve) — no free source has a live per-CUSIP quote, but this gets
+# much closer to a real price than assuming par. Anything else (corporate
+# bonds, or if the yield curve fetch fails) falls back to par.
 live_prices = get_live_prices(tuple(sorted(set(open_positions) - open_bond_tickers)))
 for ticker, pos in bond_positions.items():
-    if pos.is_open:
-        econ = estimate_bond_economics(pos)
-        live_prices[ticker] = econ.face_value
+    if not pos.is_open:
+        continue
+    econ = estimate_bond_economics(pos)
+    cusip = isin_to_us_cusip(ticker)
+    treasury = get_treasury_security(cusip) if cusip else None
+    market_price = (
+        price_from_yield_curve(100.0, treasury.coupon_rate, treasury.payments_per_year, treasury.maturity_date)
+        if treasury is not None
+        else None
+    )
+    live_prices[ticker] = market_price if market_price is not None else econ.face_value
 
 rows = []
 for ticker, pos in open_positions.items():
@@ -218,9 +228,10 @@ with tab_overview:
     c5.metric("Cash Balance", money(cash))
     if open_bond_tickers:
         st.caption(
-            f"Bonds ({', '.join(sorted(open_bond_tickers))}) are valued at par in the figures above — "
-            "there's no free live bond-pricing source, so this won't reflect real secondary-market moves. "
-            "See the Bond Detail tab for each bond's actual terms."
+            f"Bonds ({', '.join(sorted(open_bond_tickers))}) in the figures above: US Treasuries are priced "
+            "by discounting their remaining cash flows at today's actual market yield (no free source has a "
+            "live per-CUSIP quote); anything else falls back to par. See the Bond Detail tab for each bond's "
+            "actual terms."
         )
 
     st.subheader("Allocation")
@@ -555,6 +566,18 @@ if tab_bonds is not None:
                 t3.metric("Coupon Rate", f"{coupon_rate:.3f}%")
                 t4.metric("Payment Frequency", "None (zero-coupon)" if payments_per_year == 0 else f"{payments_per_year}x / yr")
                 st.caption(f"Issued {treasury.issue_date.strftime('%Y-%m-%d')} · Auction high yield {treasury.yield_at_auction:.3f}%" if treasury.yield_at_auction else f"Issued {treasury.issue_date.strftime('%Y-%m-%d')}")
+
+                market_price = price_from_yield_curve(face_value, coupon_rate, payments_per_year, maturity_date)
+                p1, p2 = st.columns(2)
+                if market_price is not None:
+                    p1.metric("Est. Market Price", f"{market_price:.2f}", f"{market_price - face_value:+.2f} vs. par")
+                else:
+                    p1.metric("Est. Market Price", "n/a")
+                p2.metric("Face Value (Par)", f"{face_value:.2f}")
+                st.caption(
+                    "Market price is estimated by discounting the bond's remaining cash flows at today's actual "
+                    "Treasury par yield curve — not a live per-CUSIP quote, since no free source offers one."
+                )
             else:
                 st.caption(
                     "No Treasury record found (not a US Treasury security, or it's a corporate/foreign bond). "

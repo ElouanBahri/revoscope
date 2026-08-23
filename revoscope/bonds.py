@@ -18,9 +18,18 @@ free, public, no-key-required source of the real security terms
   (corporate bonds, non-US government bonds).
 - Computes Macaulay/modified duration and a cash-flow schedule once a
   maturity date and coupon are known, from either source.
+- Prices open Treasury positions by discounting their remaining cash
+  flows at today's actual market yield for that time-to-maturity
+  (from the Treasury's public daily par yield curve), instead of
+  assuming they trade at par — there's no live per-CUSIP quote
+  available anywhere free, but the yield curve gets much closer to a
+  real price than a flat par assumption, especially further from
+  maturity or after rates have moved since issuance.
 """
 from __future__ import annotations
 
+import csv
+import io
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -41,12 +50,34 @@ _ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
 _TREASURY_AUCTIONS_URL = (
     "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query"
 )
+_YIELD_CURVE_URL = (
+    "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/{year}/all"
+)
+# home.treasury.gov blocks requests without a browser-like User-Agent.
+_BROWSER_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; revoscope/1.0)"}
 
 _FREQUENCY_PER_YEAR = {
     "Monthly": 12,
     "Quarterly": 4,
     "Semi-Annual": 2,
     "Annual": 1,
+}
+
+_YIELD_CURVE_TENOR_YEARS = {
+    "1 Mo": 1 / 12,
+    "1.5 Month": 1.5 / 12,
+    "2 Mo": 2 / 12,
+    "3 Mo": 3 / 12,
+    "4 Mo": 4 / 12,
+    "6 Mo": 0.5,
+    "1 Yr": 1.0,
+    "2 Yr": 2.0,
+    "3 Yr": 3.0,
+    "5 Yr": 5.0,
+    "7 Yr": 7.0,
+    "10 Yr": 10.0,
+    "20 Yr": 20.0,
+    "30 Yr": 30.0,
 }
 
 
@@ -135,6 +166,101 @@ def get_treasury_security(cusip: str) -> TreasurySecurity | None:
         )
     except Exception:
         return None
+
+
+@st.cache_data(ttl=21600, show_spinner="Fetching Treasury yield curve...")
+def get_current_treasury_yield_curve() -> dict[float, float] | None:
+    """Most recent daily Treasury par yield curve (years-to-maturity ->
+    annual yield %), free and public from home.treasury.gov. Used to price
+    open Treasury bonds by discounted cash flow instead of assuming they
+    trade at par.
+
+    Refreshed every 6 hours: the curve itself only updates once per
+    business day, but this keeps a stale value from lingering too long
+    once a new one is out, without hammering the endpoint on every rerun.
+    """
+    try:
+        response = requests.get(
+            _YIELD_CURVE_URL.format(year=date.today().year),
+            params={
+                "type": "daily_treasury_yield_curve",
+                "field_tdr_date_value": date.today().year,
+                "page": "",
+                "_format": "csv",
+            },
+            headers=_BROWSER_HEADERS,
+            timeout=15,
+        )
+        response.raise_for_status()
+        reader = csv.DictReader(io.StringIO(response.text))
+        latest_row = next(reader)  # Treasury lists most-recent date first.
+
+        curve: dict[float, float] = {}
+        for label, years in _YIELD_CURVE_TENOR_YEARS.items():
+            value = _clean(latest_row.get(label))
+            if value is not None:
+                curve[years] = value
+        return curve or None
+    except Exception:
+        return None
+
+
+def _interpolate_yield(curve: dict[float, float], years: float) -> float:
+    points = sorted(curve.items())
+    if years <= points[0][0]:
+        return points[0][1]
+    if years >= points[-1][0]:
+        return points[-1][1]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if x0 <= years <= x1:
+            weight = (years - x0) / (x1 - x0)
+            return y0 + weight * (y1 - y0)
+    return points[-1][1]
+
+
+def price_from_yield_curve(
+    face_value: float,
+    coupon_rate: float,
+    payments_per_year: int,
+    maturity_date: pd.Timestamp,
+    valuation_date: pd.Timestamp | None = None,
+) -> float | None:
+    """Fair value of a Treasury via discounted cash flow at today's actual
+    market yield for its remaining time-to-maturity (interpolated from the
+    public daily par yield curve) — the standard way to mark a bond to
+    market absent a live per-CUSIP quote, which no free source provides for
+    individual Treasury CUSIPs. Returns None if the curve can't be fetched
+    or the bond has already matured.
+    """
+    curve = get_current_treasury_yield_curve()
+    valuation_date = valuation_date or pd.Timestamp(date.today())
+    if curve is None or maturity_date <= valuation_date:
+        return None
+
+    years_to_maturity = (maturity_date - valuation_date).days / 365.25
+    yield_rate = _interpolate_yield(curve, years_to_maturity)
+
+    if payments_per_year <= 0:
+        return face_value / (1 + yield_rate / 100) ** years_to_maturity
+
+    coupon_amount = face_value * coupon_rate / 100 / payments_per_year
+    months_per_period = 12 // payments_per_year
+    period_yield = yield_rate / 100 / payments_per_year
+
+    dates = []
+    current = maturity_date
+    while current > valuation_date:
+        dates.append(current)
+        current = current - pd.DateOffset(months=months_per_period)
+    dates.sort()
+    if not dates:
+        return None
+
+    price = 0.0
+    for i, d in enumerate(dates, start=1):
+        cash_flow = coupon_amount + face_value if d == dates[-1] else coupon_amount
+        price += cash_flow / (1 + period_yield) ** i
+    return price
 
 
 @dataclass
