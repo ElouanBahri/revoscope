@@ -11,6 +11,17 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from revoscope.bonds import (
+    BOND_INCOME_TYPE,
+    BOND_REDEMPTION_TYPE,
+    build_cash_flow_schedule,
+    classify_bond_sector,
+    compute_duration,
+    estimate_bond_economics,
+    get_treasury_security,
+    is_bond_position,
+    isin_to_us_cusip,
+)
 from revoscope.parser import BUY_TYPES, SELL_TYPES, find_unknown_types, load_transactions
 from revoscope.performance import (
     BENCHMARK_NAME,
@@ -102,8 +113,20 @@ positions = build_positions(transactions)
 cash = cash_balance(transactions)
 open_positions = {t: p for t, p in positions.items() if p.is_open}
 closed_positions = {t: p for t, p in positions.items() if not p.is_open}
+bond_positions = {t: p for t, p in positions.items() if is_bond_position(p)}
+open_bond_tickers = set(bond_positions) & set(open_positions)
 
-live_prices = get_live_prices(tuple(sorted(open_positions)))
+# Yahoo Finance has no data at all for bond ISINs/CUSIPs (unlike stocks/ETFs,
+# which just occasionally fail to fetch) — pull live prices only for
+# non-bond tickers, and price open bonds at par ($100 face) instead, since
+# there's no free live bond-pricing source. This is a stated approximation,
+# not a real quote: short-duration bonds trade close to par, but this won't
+# reflect real secondary-market moves for anything further from maturity.
+live_prices = get_live_prices(tuple(sorted(set(open_positions) - open_bond_tickers)))
+for ticker, pos in bond_positions.items():
+    if pos.is_open:
+        econ = estimate_bond_economics(pos)
+        live_prices[ticker] = econ.face_value
 
 rows = []
 for ticker, pos in open_positions.items():
@@ -133,7 +156,12 @@ total_realized = sum(p.realized_pnl for p in positions.values())
 total_dividends = sum(p.dividends for p in positions.values())
 account_value = total_market_value + cash
 
-sectors = get_sectors(tuple(sorted(open_positions)))
+sectors = get_sectors(tuple(sorted(set(open_positions) - open_bond_tickers)))
+for ticker in open_bond_tickers:
+    cusip = isin_to_us_cusip(ticker)
+    treasury = get_treasury_security(cusip) if cusip else None
+    sectors[ticker] = classify_bond_sector(treasury)
+
 sector_value = (
     holdings_df.assign(Sector=holdings_df["Ticker"].map(sectors)).groupby("Sector")["Market Value"].sum(min_count=1)
     if not holdings_df.empty
@@ -146,7 +174,14 @@ sector_df["Percentage"] = (sector_df["Amount"] / total_market_value * 100) if to
 sector_df = sector_df.sort_values("Amount", ascending=False).reset_index(drop=True)
 
 # ------------------------------------------------------------------ tabs --
-tab_overview, tab_detail, tab_transactions = st.tabs(["Overview", "Stock Detail", "Transactions"])
+tab_names = ["Overview", "Stock Detail"]
+if bond_positions:
+    tab_names.append("Bond Detail")
+tab_names.append("Transactions")
+tabs = st.tabs(tab_names)
+tab_overview, tab_detail = tabs[0], tabs[1]
+tab_bonds = tabs[2] if bond_positions else None
+tab_transactions = tabs[-1]
 
 with tab_overview:
     failed_price_tickers = sorted(
@@ -165,6 +200,12 @@ with tab_overview:
     c3.metric("Realized P&L", money(total_realized))
     c4.metric("Dividends Received", money(total_dividends))
     c5.metric("Cash Balance", money(cash))
+    if open_bond_tickers:
+        st.caption(
+            f"Bonds ({', '.join(sorted(open_bond_tickers))}) are valued at par in the figures above — "
+            "there's no free live bond-pricing source, so this won't reflect real secondary-market moves. "
+            "See the Bond Detail tab for each bond's actual terms."
+        )
 
     st.subheader("Allocation")
     if not holdings_df.empty and holdings_df["Market Value"].notna().any():
@@ -306,7 +347,7 @@ with tab_overview:
             st.dataframe(closed_df, use_container_width=True, hide_index=True)
 
 with tab_detail:
-    all_tickers = sorted(positions.keys())
+    all_tickers = sorted(set(positions.keys()) - set(bond_positions))
     if st.session_state.get("selected_ticker") not in all_tickers:
         st.session_state["selected_ticker"] = all_tickers[0] if all_tickers else None
 
@@ -457,6 +498,138 @@ with tab_detail:
                 use_container_width=True,
                 hide_index=True,
             )
+
+if tab_bonds is not None:
+    with tab_bonds:
+        bond_tickers = sorted(bond_positions)
+        selected_bond = st.selectbox("Bond", bond_tickers, key="selected_bond")
+
+        if selected_bond:
+            bond_pos = bond_positions[selected_bond]
+            cusip = isin_to_us_cusip(selected_bond)
+            treasury = get_treasury_security(cusip) if cusip else None
+            econ = estimate_bond_economics(bond_pos)
+
+            status = "Open" if bond_pos.is_open else "Redeemed"
+            bd1, bd2, bd3, bd4 = st.columns(4)
+            bd1.metric("Status", status)
+            bd2.metric("Quantity Held", qty(bond_pos.quantity) if bond_pos.is_open else "—")
+            bd3.metric("Coupon Income", money(bond_pos.dividends))
+            bd4.metric("Realized P&L", money(bond_pos.realized_pnl))
+
+            st.subheader("Bond characteristics")
+            if treasury is not None:
+                st.caption(
+                    f"Real terms from the U.S. Treasury's public Fiscal Data API, looked up by CUSIP "
+                    f"({treasury.cusip}) extracted from the ISIN Revolut exports."
+                )
+                face_value = 100.0
+                coupon_rate = treasury.coupon_rate
+                payments_per_year = treasury.payments_per_year
+                maturity_date = treasury.maturity_date
+                yield_proxy = treasury.yield_at_auction or coupon_rate
+
+                t1, t2, t3, t4 = st.columns(4)
+                t1.metric("Type", f"{treasury.security_type} ({treasury.security_term})")
+                t2.metric("Maturity", maturity_date.strftime("%Y-%m-%d"))
+                t3.metric("Coupon Rate", f"{coupon_rate:.3f}%")
+                t4.metric("Payment Frequency", "None (zero-coupon)" if payments_per_year == 0 else f"{payments_per_year}x / yr")
+                st.caption(f"Issued {treasury.issue_date.strftime('%Y-%m-%d')} · Auction high yield {treasury.yield_at_auction:.3f}%" if treasury.yield_at_auction else f"Issued {treasury.issue_date.strftime('%Y-%m-%d')}")
+            else:
+                st.caption(
+                    "No Treasury record found (not a US Treasury security, or it's a corporate/foreign bond). "
+                    "These figures are estimated from the coupon payments in your own transaction history, not "
+                    "an official source — treat them as approximate."
+                )
+                face_value = econ.face_value
+                coupon_rate = econ.coupon_rate
+                payments_per_year = econ.payments_per_year
+                maturity_date = econ.maturity_date
+                yield_proxy = coupon_rate
+
+                e1, e2, e3 = st.columns(3)
+                e1.metric("Face Value (assumed)", money(face_value))
+                e2.metric(
+                    "Est. Coupon Rate",
+                    f"{coupon_rate:.3f}%" if coupon_rate is not None else "Not enough data",
+                )
+                e3.metric(
+                    "Maturity",
+                    maturity_date.strftime("%Y-%m-%d") + " (redeemed)" if maturity_date is not None else "Unknown — still open",
+                )
+                if coupon_rate is None:
+                    st.info(
+                        "Need at least two coupon payments to estimate a payment frequency and annualize the "
+                        "rate — this bond doesn't have enough history yet."
+                    )
+
+            can_compute = (
+                coupon_rate is not None
+                and payments_per_year is not None
+                and payments_per_year > 0
+                and maturity_date is not None
+                and bond_pos.is_open
+            )
+            if can_compute:
+                macaulay, modified = compute_duration(face_value, coupon_rate, payments_per_year, maturity_date, yield_proxy)
+                if macaulay is not None:
+                    st.subheader("Duration")
+                    st.caption(
+                        "Based on the security's original terms and its issue-time yield, not a live market "
+                        "price — there's no free live pricing source for individual bond CUSIPs, so this won't "
+                        "capture real interest-rate moves since issuance."
+                    )
+                    d1, d2 = st.columns(2)
+                    d1.metric("Macaulay Duration", f"{macaulay:.2f} yrs")
+                    d2.metric("Modified Duration", f"{modified:.2f} yrs")
+
+            if coupon_rate is not None and payments_per_year and payments_per_year > 0 and maturity_date is not None:
+                issue_date = treasury.issue_date if treasury is not None else bond_pos.trades["date"].min().normalize()
+                schedule = build_cash_flow_schedule(face_value, coupon_rate, payments_per_year, issue_date, maturity_date)
+                if not schedule.empty:
+                    st.subheader("Cash flow schedule")
+                    today = pd.Timestamp.now(tz=schedule["date"].dt.tz) if schedule["date"].dt.tz is not None else pd.Timestamp.now()
+                    schedule["status"] = schedule["date"].le(today).map({True: "Paid", False: "Projected"})
+
+                    cash_fig = go.Figure()
+                    for label, color in [("Paid", "#22c55e"), ("Projected", "#9AA0A6")]:
+                        subset = schedule[schedule["status"] == label]
+                        if not subset.empty:
+                            cash_fig.add_trace(
+                                go.Bar(x=subset["date"], y=subset["amount"], name=label, marker_color=color)
+                            )
+                    cash_fig.update_layout(
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        legend=dict(orientation="h"),
+                        yaxis_title="Cash flow per unit ($)",
+                        barmode="overlay",
+                    )
+                    style_fig(cash_fig)
+                    st.plotly_chart(cash_fig, use_container_width=True)
+
+                    schedule_display = schedule.copy()
+                    schedule_display["date"] = schedule_display["date"].dt.strftime("%Y-%m-%d")
+                    schedule_display["amount"] = schedule_display["amount"].map(money)
+                    st.dataframe(
+                        schedule_display.rename(columns={"date": "Date", "amount": "Per Unit", "type": "Type", "status": "Status"}),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+            st.subheader("Trade history")
+            if not bond_pos.trades.empty:
+                bond_trades_display = bond_pos.trades.copy()
+                bond_trades_display["date"] = bond_trades_display["date"].dt.strftime("%Y-%m-%d %H:%M")
+                bond_trades_display["price"] = bond_trades_display["price"].map(lambda v: money(v) if pd.notna(v) else "—")
+                bond_trades_display["amount"] = bond_trades_display["amount"].map(money)
+                bond_trades_display["quantity"] = bond_trades_display["quantity"].map(lambda v: qty(v) if pd.notna(v) else "—")
+                st.dataframe(
+                    bond_trades_display[["date", "type", "quantity", "price", "amount"]].rename(
+                        columns={"date": "Date", "type": "Type", "quantity": "Quantity", "price": "Price", "amount": "Amount"}
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
 with tab_transactions:
     st.subheader("Full transaction log")
