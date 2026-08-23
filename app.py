@@ -70,6 +70,7 @@ uploaded = st.sidebar.file_uploader("Upload a Revolut CSV export", type="csv")
 if st.sidebar.button("🔄 Refresh live prices"):
     get_live_prices.clear()
     get_price_history.clear()
+    get_sectors.clear()
 
 st.sidebar.divider()
 st.sidebar.caption(

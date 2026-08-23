@@ -79,10 +79,15 @@ def get_live_prices(tickers: tuple[str, ...]) -> dict[str, float]:
     return prices
 
 
-@st.cache_data(ttl=86400, show_spinner="Fetching sector data...")
+@st.cache_data(ttl=3600, show_spinner="Fetching sector data...")
 def get_sectors(tickers: tuple[str, ...]) -> dict[str, str]:
     """GICS sector per ticker. Falls back to 'Unknown' if the ticker's sector
     isn't reported by Yahoo Finance.
+
+    Cached for an hour, not a day: a transient fetch failure (e.g. Yahoo
+    rate-limiting) falls back to 'Unknown' same as a real gap, and caching
+    that failure for 24h would leave it looking broken for a full day with
+    no way to retry sooner than that.
     """
     sectors: dict[str, str] = {}
     for ticker in tickers:
