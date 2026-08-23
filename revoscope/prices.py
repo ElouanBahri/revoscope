@@ -92,10 +92,17 @@ def get_ticker_info(ticker: str) -> dict:
         return {}
 
 
+_FUND_QUOTE_TYPES = {"ETF", "MUTUALFUND", "INDEX"}
+
+ETF_SECTOR = "ETF & Others"
+
+
 @st.cache_data(ttl=3600, show_spinner="Fetching sector data...")
 def get_sectors(tickers: tuple[str, ...]) -> dict[str, str]:
-    """GICS sector per ticker. Falls back to 'Unknown' if the ticker's sector
-    isn't reported by Yahoo Finance.
+    """GICS sector per ticker. ETFs/funds structurally have no single GICS
+    sector (Yahoo reports none), so they're labeled 'ETF & Others' instead of
+    'Unknown' — that label is reserved for genuine fetch failures on an
+    individual stock.
 
     Cached for an hour, not a day: a transient fetch failure (e.g. Yahoo
     rate-limiting) falls back to 'Unknown' same as a real gap, and caching
@@ -104,8 +111,13 @@ def get_sectors(tickers: tuple[str, ...]) -> dict[str, str]:
     """
     sectors: dict[str, str] = {}
     for ticker in tickers:
-        raw = get_ticker_info(ticker).get("sector") or "Unknown"
-        sectors[ticker] = _YAHOO_TO_GICS_SECTOR.get(raw, raw)
+        info = get_ticker_info(ticker)
+        raw = info.get("sector")
+        if not raw:
+            quote_type = (info.get("quoteType") or "").upper()
+            sectors[ticker] = ETF_SECTOR if quote_type in _FUND_QUOTE_TYPES else "Unknown"
+        else:
+            sectors[ticker] = _YAHOO_TO_GICS_SECTOR.get(raw, raw)
     return sectors
 
 

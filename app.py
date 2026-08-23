@@ -326,8 +326,9 @@ with tab_overview:
 
     st.subheader("Sector Allocation")
     st.caption(
-        "Percentage of invested (non-cash) portfolio value per sector. \"Unknown\" means Yahoo Finance "
-        "didn't return sector data for that ticker — often a temporary fetch issue rather than a real gap."
+        "Percentage of invested (non-cash) portfolio value per sector. \"ETF & Others\" covers funds, which "
+        "don't have a single GICS sector; \"Unknown\" means Yahoo Finance didn't return sector data for that "
+        "ticker — often a temporary fetch issue rather than a real gap."
     )
     bar_fig = px.bar(
         sector_df,
@@ -506,9 +507,17 @@ with tab_detail:
                 # derive one from the payout so the marker still plots.
                 sells["price"] = sells["price"].fillna(sells["amount"] / sells["quantity"])
             if not buys.empty:
-                fig.add_trace(go.Scatter(x=buys["date"], y=buys["price"], mode="markers", name="Buy", marker=dict(color="green", size=10, symbol="triangle-up")))
+                fig.add_trace(go.Scatter(
+                    x=buys["date"], y=buys["price"], mode="markers", name="Buy",
+                    marker=dict(symbol="line-ns-open", size=22, color="#2ecc71", line=dict(width=3)),
+                    hovertemplate="Buy<br>%{x|%Y-%m-%d}<br>$%{y:.2f}<extra></extra>",
+                ))
             if not sells.empty:
-                fig.add_trace(go.Scatter(x=sells["date"], y=sells["price"], mode="markers", name="Sell", marker=dict(color="red", size=10, symbol="triangle-down")))
+                fig.add_trace(go.Scatter(
+                    x=sells["date"], y=sells["price"], mode="markers", name="Sell",
+                    marker=dict(symbol="line-ns-open", size=22, color="#e74c3c", line=dict(width=3)),
+                    hovertemplate="Sell<br>%{x|%Y-%m-%d}<br>$%{y:.2f}<extra></extra>",
+                ))
             fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), legend=dict(orientation="h"))
             style_fig(fig)
             st.plotly_chart(fig, use_container_width=True)
