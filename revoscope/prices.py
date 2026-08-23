@@ -79,6 +79,19 @@ def get_live_prices(tickers: tuple[str, ...]) -> dict[str, float]:
     return prices
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_ticker_info(ticker: str) -> dict:
+    """Cached raw Yahoo Finance `.info` for one ticker. Sector and company
+    name both need this, so sharing one cached fetch (instead of each
+    calling yfinance separately) halves the Yahoo requests per ticker —
+    which also means less exposure to Yahoo's rate-limiting.
+    """
+    try:
+        return yf.Ticker(_to_yahoo_symbol(ticker)).info
+    except Exception:
+        return {}
+
+
 @st.cache_data(ttl=3600, show_spinner="Fetching sector data...")
 def get_sectors(tickers: tuple[str, ...]) -> dict[str, str]:
     """GICS sector per ticker. Falls back to 'Unknown' if the ticker's sector
@@ -91,13 +104,21 @@ def get_sectors(tickers: tuple[str, ...]) -> dict[str, str]:
     """
     sectors: dict[str, str] = {}
     for ticker in tickers:
-        try:
-            info = yf.Ticker(_to_yahoo_symbol(ticker)).info
-            raw = info.get("sector") or "Unknown"
-            sectors[ticker] = _YAHOO_TO_GICS_SECTOR.get(raw, raw)
-        except Exception:
-            sectors[ticker] = "Unknown"
+        raw = get_ticker_info(ticker).get("sector") or "Unknown"
+        sectors[ticker] = _YAHOO_TO_GICS_SECTOR.get(raw, raw)
     return sectors
+
+
+@st.cache_data(ttl=3600, show_spinner="Fetching company names...")
+def get_company_names(tickers: tuple[str, ...]) -> dict[str, str]:
+    """Short company/fund name per ticker, for display instead of the bare
+    ticker symbol. Falls back to the ticker itself if Yahoo doesn't have a
+    name for it (e.g. a fetch failure, or a ticker Yahoo can't resolve)."""
+    names: dict[str, str] = {}
+    for ticker in tickers:
+        info = get_ticker_info(ticker)
+        names[ticker] = info.get("shortName") or info.get("longName") or ticker
+    return names
 
 
 @st.cache_data(ttl=3600, show_spinner="Fetching price history...")

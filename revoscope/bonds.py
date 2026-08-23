@@ -7,8 +7,11 @@ Treasuries specifically, the U.S. Treasury's own Fiscal Data API is a
 free, public, no-key-required source of the real security terms
 (maturity, coupon, payment frequency), keyed by CUSIP. This module:
 
-- Detects which positions are bonds (from their transaction types, not
-  ticker guessing — works for any bond, not just US Treasuries).
+- Detects which positions are bonds — from their transaction types
+  (BOND COUPON / BOND REDEMPTION) if any have happened yet, or from the
+  ticker itself looking like an ISIN otherwise, so a bond bought only
+  yesterday (no coupon/redemption history yet) is still recognized
+  instead of silently being treated as an unresolvable stock.
 - Extracts a CUSIP from a US ISIN and looks it up against that API.
 - Falls back to estimating economics from the coupon payments actually
   observed in the CSV for anything the Treasury API doesn't cover
@@ -47,10 +50,15 @@ _FREQUENCY_PER_YEAR = {
 }
 
 
-def is_bond_position(pos: Position) -> bool:
-    """A position is a bond if any of its trades are bond-specific types —
-    derived from the data itself, so this works for any bond, not just ones
-    we've special-cased."""
+def is_bond_position(ticker: str, pos: Position) -> bool:
+    """A position is a bond if any of its trades are bond-specific types, or
+    if the ticker itself is shaped like an ISIN (Revolut's bond ticker
+    format) — no ordinary stock/ETF ticker looks like a 12-character ISIN,
+    so this catches a bond bought before its first coupon/redemption ever
+    happens, not just ones with payment history already.
+    """
+    if _ISIN_RE.match(ticker):
+        return True
     if pos.trades.empty:
         return False
     return pos.trades["type"].isin({BOND_INCOME_TYPE, BOND_REDEMPTION_TYPE}).any()

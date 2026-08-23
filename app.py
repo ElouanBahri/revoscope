@@ -32,7 +32,14 @@ from revoscope.performance import (
     price_return_index,
 )
 from revoscope.portfolio import build_positions, cash_balance
-from revoscope.prices import ALL_SECTORS, get_live_prices, get_price_history, get_sectors
+from revoscope.prices import (
+    ALL_SECTORS,
+    get_company_names,
+    get_live_prices,
+    get_price_history,
+    get_sectors,
+    get_ticker_info,
+)
 
 DEFAULT_CSV = Path(__file__).parent / "data" / "raw" / "transactions.csv"
 
@@ -82,6 +89,8 @@ if st.sidebar.button("🔄 Refresh live prices"):
     get_live_prices.clear()
     get_price_history.clear()
     get_sectors.clear()
+    get_company_names.clear()
+    get_ticker_info.clear()
 
 st.sidebar.divider()
 st.sidebar.caption(
@@ -113,7 +122,7 @@ positions = build_positions(transactions)
 cash = cash_balance(transactions)
 open_positions = {t: p for t, p in positions.items() if p.is_open}
 closed_positions = {t: p for t, p in positions.items() if not p.is_open}
-bond_positions = {t: p for t, p in positions.items() if is_bond_position(p)}
+bond_positions = {t: p for t, p in positions.items() if is_bond_position(t, p)}
 open_bond_tickers = set(bond_positions) & set(open_positions)
 
 # Yahoo Finance has no data at all for bond ISINs/CUSIPs (unlike stocks/ETFs,
@@ -161,6 +170,13 @@ for ticker in open_bond_tickers:
     cusip = isin_to_us_cusip(ticker)
     treasury = get_treasury_security(cusip) if cusip else None
     sectors[ticker] = classify_bond_sector(treasury)
+
+company_names = get_company_names(tuple(sorted(set(open_positions) - open_bond_tickers)))
+for ticker in open_bond_tickers:
+    cusip = isin_to_us_cusip(ticker)
+    treasury = get_treasury_security(cusip) if cusip else None
+    company_names[ticker] = f"{treasury.security_type} ({treasury.security_term})" if treasury else "Bond"
+holdings_df["Name"] = holdings_df["Ticker"].map(company_names)
 
 sector_value = (
     holdings_df.assign(Sector=holdings_df["Ticker"].map(sectors)).groupby("Sector")["Market Value"].sum(min_count=1)
@@ -219,10 +235,14 @@ with tab_overview:
                 color="Unrealized %",
                 color_continuous_scale="RdYlGn",
                 color_continuous_midpoint=0,
+                custom_data=["Name"],
             )
             fig.update_traces(
-                texttemplate="%{label}<br>%{percentRoot:.0%}",
-                hovertemplate="<b>%{label}</b><br>Market Value: $%{value:,.2f}<br>Allocation: %{percentRoot:.1%}<br>Unrealized: %{color:.2f}%<extra></extra>",
+                # `label` stays the ticker (path key) so click-to-select still
+                # drives the Stock/Bond Detail tabs correctly — only the
+                # displayed text swaps to the company/fund name for clarity.
+                texttemplate="%{customdata[0]}<br>%{percentRoot:.0%}",
+                hovertemplate="<b>%{customdata[0]}</b> (%{label})<br>Market Value: $%{value:,.2f}<br>Allocation: %{percentRoot:.1%}<br>Unrealized: %{color:.2f}%<extra></extra>",
             )
             fig.update_layout(margin=dict(t=10, b=10, l=10, r=10))
             style_fig(fig)
@@ -236,7 +256,7 @@ with tab_overview:
             badge_ticker = st.session_state.get("selected_ticker")
             badge_row = holdings_df[holdings_df["Ticker"] == badge_ticker] if badge_ticker else pd.DataFrame()
             if not badge_row.empty:
-                st.markdown(f"**{badge_ticker}**")
+                st.markdown(f"**{badge_row['Name'].iloc[0]}** ({badge_ticker})")
                 st.metric("Unrealized P&L", money(badge_row["Unrealized P&L"].iloc[0]), pct(badge_row["Unrealized %"].iloc[0]))
     else:
         st.info("No live prices available yet for an allocation chart.")
