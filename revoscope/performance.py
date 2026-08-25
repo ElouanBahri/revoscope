@@ -90,7 +90,7 @@ def build_portfolio_series(
         price_series = prices.set_index(prices["Date"].dt.normalize())["Close"].reindex(date_index, method="ffill")
         total_value = total_value.add(shares_held * price_series.fillna(0.0), fill_value=0.0)
 
-        cash_flow = (trades["amount"] * sign).groupby(trades["date"]).sum()
+        cash_flow = (trades["amount_usd"] * sign).groupby(trades["date"]).sum()
         total_cash_flow = total_cash_flow.add(cash_flow.reindex(date_index, fill_value=0.0), fill_value=0.0)
 
     return total_value, total_cash_flow

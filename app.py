@@ -378,6 +378,36 @@ with tab_overview:
             )
             st.dataframe(closed_df, use_container_width=True, hide_index=True)
 
+    stock_tickers = sorted(set(open_positions) - open_bond_tickers)
+    if len(stock_tickers) >= 2:
+        st.subheader("Stock Correlation")
+        st.caption(
+            "Pairwise correlation of daily returns over the past year, for open stock/ETF positions only "
+            "(bonds excluded — they don't trade with a comparable daily price series)."
+        )
+        stock_returns = {}
+        for ticker in stock_tickers:
+            hist = get_price_history(ticker, period="1y")
+            if not hist.empty:
+                daily_returns = hist.set_index("Date")["Close"].pct_change().dropna()
+                if not daily_returns.empty:
+                    stock_returns[ticker] = daily_returns
+        if len(stock_returns) >= 2:
+            corr_matrix = pd.DataFrame(stock_returns).corr()
+            corr_fig = px.imshow(
+                corr_matrix,
+                text_auto=".2f",
+                color_continuous_scale="RdBu",
+                zmin=-1,
+                zmax=1,
+                aspect="auto",
+            )
+            corr_fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), coloraxis_colorbar_title="")
+            style_fig(corr_fig)
+            st.plotly_chart(corr_fig, use_container_width=True)
+        else:
+            st.info("Not enough price history to compute correlations yet.")
+
 with tab_detail:
     all_tickers = sorted(set(positions.keys()) - set(bond_positions))
     if st.session_state.get("selected_ticker") not in all_tickers:
@@ -505,16 +535,16 @@ with tab_detail:
             if not sells.empty:
                 # Bond redemptions carry no per-share price in the export;
                 # derive one from the payout so the marker still plots.
-                sells["price"] = sells["price"].fillna(sells["amount"] / sells["quantity"])
+                sells["price_usd"] = sells["price_usd"].fillna(sells["amount_usd"] / sells["quantity"])
             if not buys.empty:
                 fig.add_trace(go.Scatter(
-                    x=buys["date"], y=buys["price"], mode="markers", name="Buy",
+                    x=buys["date"], y=buys["price_usd"], mode="markers", name="Buy",
                     marker=dict(symbol="line-ns-open", size=22, color="#2ecc71", line=dict(width=3)),
                     hovertemplate="Buy<br>%{x|%Y-%m-%d}<br>$%{y:.2f}<extra></extra>",
                 ))
             if not sells.empty:
                 fig.add_trace(go.Scatter(
-                    x=sells["date"], y=sells["price"], mode="markers", name="Sell",
+                    x=sells["date"], y=sells["price_usd"], mode="markers", name="Sell",
                     marker=dict(symbol="line-ns-open", size=22, color="#e74c3c", line=dict(width=3)),
                     hovertemplate="Sell<br>%{x|%Y-%m-%d}<br>$%{y:.2f}<extra></extra>",
                 ))
@@ -528,12 +558,12 @@ with tab_detail:
         if not pos.trades.empty:
             trades_display = pos.trades.copy()
             trades_display["date"] = trades_display["date"].dt.strftime("%Y-%m-%d %H:%M")
-            trades_display["price"] = trades_display["price"].map(lambda v: money(v) if pd.notna(v) else "—")
-            trades_display["amount"] = trades_display["amount"].map(money)
+            trades_display["price_usd"] = trades_display["price_usd"].map(lambda v: money(v) if pd.notna(v) else "—")
+            trades_display["amount_usd"] = trades_display["amount_usd"].map(money)
             trades_display["quantity"] = trades_display["quantity"].map(lambda v: qty(v) if pd.notna(v) else "—")
             st.dataframe(
-                trades_display[["date", "type", "quantity", "price", "amount"]].rename(
-                    columns={"date": "Date", "type": "Type", "quantity": "Quantity", "price": "Price", "amount": "Amount"}
+                trades_display[["date", "type", "quantity", "price_usd", "amount_usd"]].rename(
+                    columns={"date": "Date", "type": "Type", "quantity": "Quantity", "price_usd": "Price", "amount_usd": "Amount"}
                 ),
                 use_container_width=True,
                 hide_index=True,
@@ -672,12 +702,12 @@ if tab_bonds is not None:
             if not bond_pos.trades.empty:
                 bond_trades_display = bond_pos.trades.copy()
                 bond_trades_display["date"] = bond_trades_display["date"].dt.strftime("%Y-%m-%d %H:%M")
-                bond_trades_display["price"] = bond_trades_display["price"].map(lambda v: money(v) if pd.notna(v) else "—")
-                bond_trades_display["amount"] = bond_trades_display["amount"].map(money)
+                bond_trades_display["price_usd"] = bond_trades_display["price_usd"].map(lambda v: money(v) if pd.notna(v) else "—")
+                bond_trades_display["amount_usd"] = bond_trades_display["amount_usd"].map(money)
                 bond_trades_display["quantity"] = bond_trades_display["quantity"].map(lambda v: qty(v) if pd.notna(v) else "—")
                 st.dataframe(
-                    bond_trades_display[["date", "type", "quantity", "price", "amount"]].rename(
-                        columns={"date": "Date", "type": "Type", "quantity": "Quantity", "price": "Price", "amount": "Amount"}
+                    bond_trades_display[["date", "type", "quantity", "price_usd", "amount_usd"]].rename(
+                        columns={"date": "Date", "type": "Type", "quantity": "Quantity", "price_usd": "Price", "amount_usd": "Amount"}
                     ),
                     use_container_width=True,
                     hide_index=True,
@@ -696,12 +726,20 @@ with tab_transactions:
 
     log_display = log.copy()
     log_display["date"] = log_display["date"].dt.strftime("%Y-%m-%d %H:%M")
-    log_display["price"] = log_display["price"].map(lambda v: money(v) if pd.notna(v) else "—")
-    log_display["amount"] = log_display["amount"].map(money)
+    log_display["price"] = log_display["price"].map(lambda v: f"{v:,.2f}" if pd.notna(v) else "—")
+    log_display["amount"] = log_display["amount"].map(lambda v: f"{v:,.2f}" if pd.notna(v) else "—")
+    log_display["amount_usd"] = log_display["amount_usd"].map(money)
     log_display["quantity"] = log_display["quantity"].map(lambda v: qty(v) if pd.notna(v) else "—")
+    st.caption(
+        "Price/Amount are as recorded, in the trade's own currency; Amount (USD) is that value converted at the "
+        "day's actual exchange rate — the figure used everywhere else in this app."
+    )
     st.dataframe(
-        log_display[["date", "ticker", "type", "quantity", "price", "amount", "currency"]].rename(
-            columns={"date": "Date", "ticker": "Ticker", "type": "Type", "quantity": "Quantity", "price": "Price", "amount": "Amount", "currency": "Currency"}
+        log_display[["date", "ticker", "type", "quantity", "price", "amount", "currency", "amount_usd"]].rename(
+            columns={
+                "date": "Date", "ticker": "Ticker", "type": "Type", "quantity": "Quantity",
+                "price": "Price", "amount": "Amount", "currency": "Currency", "amount_usd": "Amount (USD)",
+            }
         ),
         use_container_width=True,
         hide_index=True,

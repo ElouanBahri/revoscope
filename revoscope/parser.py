@@ -10,6 +10,8 @@ import re
 
 import pandas as pd
 
+from .fx import convert_amounts_to_usd
+
 # Opening a position (adds shares/units).
 BUY_TYPES = {"BUY - MARKET", "BUY - LIMIT"}
 # Closing/reducing a position. A bond redemption behaves exactly like a sell
@@ -57,8 +59,14 @@ def _parse_money(value: object) -> float:
 def load_transactions(csv_path: str) -> pd.DataFrame:
     """Load a Revolut transactions CSV export into a normalized DataFrame.
 
-    Columns: date, ticker, type, quantity, price, amount, currency, fx_rate.
-    Rows are sorted chronologically.
+    Columns: date, ticker, type, quantity, price, amount, currency, fx_rate,
+    plus price_usd/amount_usd — `price`/`amount` as originally recorded in
+    the trade's native currency (`currency`), converted to USD using that
+    day's actual exchange rate. Every money computation elsewhere in the app
+    (cost basis, cash balance, P&L, performance series) uses the _usd
+    columns so a EUR-denominated trade (e.g. a Xetra-listed UCITS ETF)
+    doesn't get silently treated as if it were USD. Rows are sorted
+    chronologically.
     """
     df = pd.read_csv(csv_path)
     df = df.rename(columns=_COLUMN_MAP)
@@ -72,7 +80,14 @@ def load_transactions(csv_path: str) -> pd.DataFrame:
     df["amount"] = df["amount"].apply(_parse_money)
     df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce")
     df["fx_rate"] = pd.to_numeric(df["fx_rate"], errors="coerce")
-    return df.sort_values("date").reset_index(drop=True)
+    df = df.sort_values("date").reset_index(drop=True)
+
+    df["amount_usd"] = convert_amounts_to_usd(df["amount"], df["currency"], df["date"])
+    # Same helper, same (currency, date) cache entries as amount_usd above —
+    # this doesn't cost a second round of API calls.
+    df["price_usd"] = convert_amounts_to_usd(df["price"], df["currency"], df["date"])
+
+    return df
 
 
 def find_unknown_types(transactions: pd.DataFrame) -> list[str]:

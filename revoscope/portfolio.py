@@ -52,19 +52,19 @@ def build_positions(transactions: pd.DataFrame) -> dict[str, Position]:
         pos = positions.setdefault(row.ticker, Position(ticker=row.ticker))
 
         if row.type in BUY_TYPES:
-            pos.cost_basis += row.amount
+            pos.cost_basis += row.amount_usd
             pos.quantity += row.quantity
             trade_rows.setdefault(row.ticker, []).append(row)
         elif row.type in SELL_TYPES:
             avg_before = pos.avg_price
             cost_removed = row.quantity * avg_before
-            pos.realized_pnl += row.amount - cost_removed
+            pos.realized_pnl += row.amount_usd - cost_removed
             pos.cost_basis -= cost_removed
             pos.cost_basis_sold += cost_removed
             pos.quantity -= row.quantity
             trade_rows.setdefault(row.ticker, []).append(row)
         elif row.type in INCOME_TYPES:
-            pos.dividends += row.amount
+            pos.dividends += row.amount_usd
             trade_rows.setdefault(row.ticker, []).append(row)
 
     for ticker, rows in trade_rows.items():
@@ -74,18 +74,21 @@ def build_positions(transactions: pd.DataFrame) -> dict[str, Position]:
 
 
 def cash_balance(transactions: pd.DataFrame) -> float:
-    """Net cash movement across the whole account: buys/sells (stocks, ETFs,
-    bonds), dividends/coupons, redemptions, top-ups, withdrawals, and
-    rewards/clawbacks.
+    """Net cash movement across the whole account, in USD: buys/sells
+    (stocks, ETFs, bonds), dividends/coupons, redemptions, top-ups,
+    withdrawals, and rewards/clawbacks.
 
-    Every type except BUY already carries the correct sign in `amount`
+    Every type except BUY already carries the correct sign in `amount_usd`
     (sells/income/top-ups/rewards are positive inflows; withdrawals and
-    clawbacks arrive pre-negated from Revolut).
+    clawbacks arrive pre-negated from Revolut). Each cash flow converts at
+    its own transaction date's exchange rate — this is the USD value of the
+    cash *when it moved*, not a live valuation of whatever currency wallet
+    still holds it.
     """
     cash = 0.0
     for row in transactions.itertuples(index=False):
         if row.type in BUY_TYPES:
-            cash -= row.amount
+            cash -= row.amount_usd
         else:
-            cash += row.amount
+            cash += row.amount_usd
     return cash

@@ -6,6 +6,8 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+from .fx import get_latest_usd_rate, get_usd_rate_series
+
 # Revolut exports the bare ticker with no exchange suffix, but Yahoo Finance
 # requires one for anything not listed on a US exchange (US stocks like AAPL
 # resolve as-is; a European UCITS ETF like VUAA does not). If a ticker fails
@@ -61,8 +63,14 @@ def _strip_tz(dates: pd.Series) -> pd.Series:
 
 @st.cache_data(ttl=300, show_spinner="Fetching live prices...")
 def get_live_prices(tickers: tuple[str, ...]) -> dict[str, float]:
-    """Latest close price per ticker. Missing/unresolvable tickers map to NaN
-    rather than raising, so one bad symbol doesn't break the dashboard.
+    """Latest close price per ticker, converted to USD. Missing/unresolvable
+    tickers map to NaN rather than raising, so one bad symbol doesn't break
+    the dashboard.
+
+    Yahoo Finance quotes each ticker in its own listing currency — a
+    Xetra-listed UCITS ETF like VUAA.DE comes back in EUR, not USD — so a
+    non-USD quote is converted at today's rate before being reported,
+    keeping every position comparable in the same currency.
     """
     prices: dict[str, float] = {}
     for ticker in tickers:
@@ -73,7 +81,10 @@ def get_live_prices(tickers: tuple[str, ...]) -> dict[str, float]:
             # perfectly resolvable ticker until the feed catches up.
             history = yf.Ticker(_to_yahoo_symbol(ticker)).history(period="5d")
             closes = history["Close"].dropna()
-            prices[ticker] = float(closes.iloc[-1]) if not closes.empty else float("nan")
+            native_price = float(closes.iloc[-1]) if not closes.empty else float("nan")
+            currency = (get_ticker_info(ticker).get("currency") or "USD").upper()
+            rate = get_latest_usd_rate(currency)
+            prices[ticker] = native_price * rate if rate is not None else native_price
         except Exception:
             prices[ticker] = float("nan")
     return prices
@@ -135,16 +146,34 @@ def get_company_names(tickers: tuple[str, ...]) -> dict[str, str]:
 
 @st.cache_data(ttl=3600, show_spinner="Fetching price history...")
 def get_price_history(ticker: str, period: str = "6mo", start: str | None = None) -> pd.DataFrame:
-    """Daily close-price history for one ticker, or an empty DataFrame if
-    unavailable. Pass `start` (as 'YYYY-MM-DD') for a fixed start date
-    instead of a relative `period` — used for since-investment and beta
-    comparisons against a fixed benchmark window.
+    """Daily close-price history for one ticker in USD, or an empty
+    DataFrame if unavailable. Pass `start` (as 'YYYY-MM-DD') for a fixed
+    start date instead of a relative `period` — used for since-investment
+    and beta comparisons against a fixed benchmark window.
+
+    A non-USD-listed ticker (e.g. a Xetra ETF quoted in EUR) is converted
+    day-by-day using that day's actual exchange rate, not one flat rate, so
+    the shape of the return series isn't distorted by FX drift over the
+    window — this matters for beta/backtest comparisons, not just the
+    current value.
     """
     try:
         yf_ticker = yf.Ticker(_to_yahoo_symbol(ticker))
         history = yf_ticker.history(start=start) if start else yf_ticker.history(period=period)
         df = history.reset_index()[["Date", "Close"]].dropna(subset=["Close"])
         df["Date"] = _strip_tz(df["Date"])
+
+        currency = (get_ticker_info(ticker).get("currency") or "USD").upper()
+        if currency != "USD" and not df.empty:
+            start_str = df["Date"].min().strftime("%Y-%m-%d")
+            end_str = df["Date"].max().strftime("%Y-%m-%d")
+            rate_series = get_usd_rate_series(currency, start_str, end_str)
+            if rate_series:
+                rates = pd.Series(rate_series, name="rate")
+                rates.index = pd.to_datetime(rates.index)
+                rates = rates.sort_index().reindex(df["Date"].sort_values().unique(), method="ffill").bfill()
+                df["Close"] = df["Close"] * df["Date"].map(rates)
+
         return df
     except Exception:
         return pd.DataFrame(columns=["Date", "Close"])

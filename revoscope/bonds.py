@@ -287,7 +287,7 @@ def estimate_bond_economics(pos: Position) -> BondEconomics:
     """
     redemptions = pos.trades[pos.trades["type"] == BOND_REDEMPTION_TYPE]
     if not redemptions.empty and redemptions["quantity"].sum() > 0:
-        face_value = float(redemptions["amount"].sum() / redemptions["quantity"].sum())
+        face_value = float(redemptions["amount_usd"].sum() / redemptions["quantity"].sum())
         maturity_date = pd.Timestamp(redemptions["date"].max())
     else:
         face_value = 100.0
@@ -301,7 +301,7 @@ def estimate_bond_economics(pos: Position) -> BondEconomics:
         avg_gap_days = float(gaps_days.mean())
         payments_per_year = max(1, round(365.25 / avg_gap_days)) if avg_gap_days > 0 else None
         if payments_per_year:
-            avg_payment = float(coupons["amount"].mean())
+            avg_payment = float(coupons["amount_usd"].mean())
             per_unit_payment = avg_payment / pos.quantity if pos.quantity > 0 else avg_payment
             coupon_rate = per_unit_payment * payments_per_year / face_value * 100
 
