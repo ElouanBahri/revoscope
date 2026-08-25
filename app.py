@@ -43,6 +43,7 @@ from revoscope.prices import (
 )
 
 DEFAULT_CSV = Path(__file__).parent / "data" / "raw" / "transactions.csv"
+EXAMPLE_CSV = Path(__file__).parent / "data" / "raw" / "example-portfolio.csv"
 
 st.set_page_config(page_title="revoscope", page_icon="📊", layout="wide")
 
@@ -99,14 +100,28 @@ st.sidebar.caption(
     "Questions? [elouan.bahri1@berkeley.edu](mailto:elouan.bahri1@berkeley.edu)"
 )
 
-source = uploaded if uploaded is not None else DEFAULT_CSV
-if uploaded is None and not DEFAULT_CSV.exists():
+using_example = False
+if uploaded is not None:
+    source = uploaded
+elif DEFAULT_CSV.exists():
+    source = DEFAULT_CSV
+elif EXAMPLE_CSV.exists():
+    source = EXAMPLE_CSV
+    using_example = True
+else:
     st.info(
         "👋 **Upload your Revolut transactions CSV in the sidebar to get started.**\n\n"
         "In the Revolut app: **Invest → Statements → Export → CSV**, "
         "then upload the file here."
     )
     st.stop()
+
+if using_example:
+    st.info(
+        "👀 **You're viewing an example portfolio** — real trades of mine, in companies I like, "
+        "shown here to demonstrate how revoscope works. Upload your own Revolut CSV in the sidebar "
+        "to see your own data instead."
+    )
 
 transactions = _load(source)
 

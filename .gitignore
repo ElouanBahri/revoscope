@@ -6,6 +6,9 @@ __pycache__/
 # Personal financial data — never commit real exports
 data/raw/*.csv
 !data/raw/.gitkeep
+# Exception: a trimmed, deliberately-published example portfolio used as the
+# live demo's default dataset when no CSV has been uploaded.
+!data/raw/example-portfolio.csv
 
 # Streamlit
 .streamlit/secrets.toml
