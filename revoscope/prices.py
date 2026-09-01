@@ -51,7 +51,11 @@ _YAHOO_TO_GICS_SECTOR = {
 }
 
 
-def _to_yahoo_symbol(ticker: str) -> str:
+def to_yahoo_symbol(ticker: str) -> str:
+    """Map a Revolut ticker to the Yahoo Finance symbol it actually resolves
+    under (see TICKER_OVERRIDES above). Public so other modules needing a
+    Yahoo-qualified symbol — e.g. news.py's per-ticker news lookup — stay
+    consistent with prices/sector/name lookups instead of re-deriving it."""
     return TICKER_OVERRIDES.get(ticker, ticker)
 
 
@@ -79,7 +83,7 @@ def get_live_prices(tickers: tuple[str, ...]) -> dict[str, float]:
             # a lag, and a bare period="1d" fetch can land on that one row
             # while it's still NaN, showing "no price" for an otherwise
             # perfectly resolvable ticker until the feed catches up.
-            history = yf.Ticker(_to_yahoo_symbol(ticker)).history(period="5d")
+            history = yf.Ticker(to_yahoo_symbol(ticker)).history(period="5d")
             closes = history["Close"].dropna()
             native_price = float(closes.iloc[-1]) if not closes.empty else float("nan")
             currency = (get_ticker_info(ticker).get("currency") or "USD").upper()
@@ -98,7 +102,7 @@ def get_ticker_info(ticker: str) -> dict:
     which also means less exposure to Yahoo's rate-limiting.
     """
     try:
-        return yf.Ticker(_to_yahoo_symbol(ticker)).info
+        return yf.Ticker(to_yahoo_symbol(ticker)).info
     except Exception:
         return {}
 
@@ -158,7 +162,7 @@ def get_price_history(ticker: str, period: str = "6mo", start: str | None = None
     current value.
     """
     try:
-        yf_ticker = yf.Ticker(_to_yahoo_symbol(ticker))
+        yf_ticker = yf.Ticker(to_yahoo_symbol(ticker))
         history = yf_ticker.history(start=start) if start else yf_ticker.history(period=period)
         df = history.reset_index()[["Date", "Close"]].dropna(subset=["Close"])
         df["Date"] = _strip_tz(df["Date"])

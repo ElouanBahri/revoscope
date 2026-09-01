@@ -34,6 +34,11 @@ streamlit run app.py
 - **Overview** — account value, unrealized/realized P&L, dividends, cash
   balance, an allocation treemap, and a holdings table. Click a stock in the
   treemap or table to jump to its detail view.
+- **News** — an economy overview (current Fed/ECB policy rates, each
+  central bank's next scheduled meeting, and recent US/Europe/Asia macro
+  headlines), plus a portfolio news section with recent headlines for each
+  open position — generic, so it adapts to whatever's in the uploaded CSV.
+  Every headline is shown with its publisher and how recent it is.
 - **Stock Detail** — for one ticker: quantity held, average entry price,
   current price, unrealized/realized P&L, dividends received, a price chart
   with your buy/sell points marked, and the full trade history.
@@ -47,3 +52,7 @@ streamlit run app.py
   `revoscope/prices.py::TICKER_OVERRIDES`.
 - Live prices are cached for 5 minutes; use the sidebar's refresh button to
   force an update.
+- FOMC/ECB meeting dates in the News tab are a hand-maintained lookup table
+  (`revoscope/news.py::FOMC_MEETINGS` / `ECB_MEETINGS`) — extend it once the
+  next year's calendar is published; policy rates themselves are fetched
+  live so they don't need updating.

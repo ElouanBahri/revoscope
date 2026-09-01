@@ -23,6 +23,19 @@ from revoscope.bonds import (
     isin_to_us_cusip,
     price_from_yield_curve,
 )
+from revoscope.news import (
+    ECB_MEETINGS,
+    ECB_SOURCE_URL,
+    FOMC_MEETINGS,
+    FOMC_SOURCE_URL,
+    get_ecb_deposit_rate,
+    get_fed_funds_target_range,
+    get_ticker_news,
+    next_meeting,
+    search_news,
+    search_news_topics,
+    time_ago,
+)
 from revoscope.parser import BUY_TYPES, SELL_TYPES, find_unknown_types, load_transactions
 from revoscope.performance import (
     BENCHMARK_NAME,
@@ -93,6 +106,8 @@ if st.sidebar.button("🔄 Refresh live prices"):
     get_sectors.clear()
     get_company_names.clear()
     get_ticker_info.clear()
+    search_news.clear()
+    get_ticker_news.clear()
 
 st.sidebar.divider()
 st.sidebar.caption(
@@ -215,13 +230,13 @@ sector_df["Percentage"] = (sector_df["Amount"] / total_market_value * 100) if to
 sector_df = sector_df.sort_values("Amount", ascending=False).reset_index(drop=True)
 
 # ------------------------------------------------------------------ tabs --
-tab_names = ["Overview", "Stock Detail"]
+tab_names = ["Overview", "News", "Stock Detail"]
 if bond_positions:
     tab_names.append("Bond Detail")
 tab_names.append("Transactions")
 tabs = st.tabs(tab_names)
-tab_overview, tab_detail = tabs[0], tabs[1]
-tab_bonds = tabs[2] if bond_positions else None
+tab_overview, tab_news, tab_detail = tabs[0], tabs[1], tabs[2]
+tab_bonds = tabs[3] if bond_positions else None
 tab_transactions = tabs[-1]
 
 with tab_overview:
@@ -422,6 +437,128 @@ with tab_overview:
             st.plotly_chart(corr_fig, use_container_width=True)
         else:
             st.info("Not enough price history to compute correlations yet.")
+
+with tab_news:
+    now_utc = pd.Timestamp.now(tz="UTC")
+    today = pd.Timestamp.now().normalize()
+
+    st.subheader("🌍 Economy Overview")
+    st.caption(
+        "Current policy rates and each central bank's next scheduled meeting, plus the most recent macro "
+        "headlines for the US/Fed, Europe, and Asia. Rates refresh hourly; headlines refresh every 15 minutes."
+    )
+
+    fed_rate = get_fed_funds_target_range()
+    ecb_rate = get_ecb_deposit_rate()
+    next_fomc = next_meeting(FOMC_MEETINGS, today)
+    next_ecb = next_meeting(ECB_MEETINGS, today)
+
+    def _meeting_label(meeting: tuple[pd.Timestamp, pd.Timestamp] | None) -> tuple[str, str | None, str]:
+        # Short value (fits st.metric's big-number display without
+        # truncating) + a longer string for the help tooltip.
+        if meeting is None:
+            return "Not on file", None, "No meeting date on file — check the source link below."
+        start, end = meeting
+        short = f"{start.strftime('%b %d')}–{end.strftime('%d')}"
+        full = (
+            f"{start.strftime('%b %d')}–{end.strftime('%d, %Y')}"
+            if start.month == end.month
+            else f"{start.strftime('%b %d')} – {end.strftime('%b %d, %Y')}"
+        )
+        days = (start - today).days
+        delta = f"in {days}d" if days >= 0 else "underway / just concluded"
+        return short, delta, full
+
+    m1, m2, m3, m4 = st.columns([1.3, 1, 1, 1])
+    m1.metric(
+        "Fed Funds Target Range",
+        fed_rate["display"].replace(" ", "") if fed_rate else "n/a",
+        help=f"As of {fed_rate['as_of'].date()}." if fed_rate else None,
+    )
+    fomc_short, fomc_delta, fomc_full = _meeting_label(next_fomc)
+    m2.metric("Next FOMC Meeting", fomc_short, fomc_delta, help=fomc_full)
+    m3.metric(
+        "ECB Deposit Rate",
+        ecb_rate["display"] if ecb_rate else "n/a",
+        help=f"As of {ecb_rate['as_of'].date()}." if ecb_rate else None,
+    )
+    ecb_short, ecb_delta, ecb_full = _meeting_label(next_ecb)
+    m4.metric("Next ECB Meeting", ecb_short, ecb_delta, help=ecb_full)
+
+    source_bits = []
+    if fed_rate:
+        source_bits.append(f"[{fed_rate['source_name']}]({fed_rate['source_url']}) — Fed funds rate, as of {fed_rate['as_of'].date()}")
+    if ecb_rate:
+        source_bits.append(f"[{ecb_rate['source_name']}]({ecb_rate['source_url']}) — ECB deposit rate, as of {ecb_rate['as_of'].date()}")
+    source_bits.append(f"[federalreserve.gov]({FOMC_SOURCE_URL}) — FOMC meeting calendar")
+    source_bits.append(f"[ecb.europa.eu]({ECB_SOURCE_URL}) — ECB meeting calendar")
+    st.caption("Sources: " + " · ".join(source_bits))
+
+    st.divider()
+    # Yahoo's search endpoint matches best on a short 2-3 word phrase (see
+    # search_news_topics's docstring), so each region merges a couple of
+    # short queries rather than one long, more "precise" one.
+    region_queries = {
+        "🇺🇸 United States / Fed": ["Federal Reserve", "Fed interest rate"],
+        "🇪🇺 Europe": ["European Central Bank", "Eurozone economy"],
+        "🌏 Asia": ["China economy", "Bank of Japan"],
+    }
+    region_cols = st.columns(3)
+    for col, (region_label, queries) in zip(region_cols, region_queries.items()):
+        with col:
+            st.markdown(f"**{region_label}**")
+            headlines = search_news_topics(queries, count_per_query=5, limit=5)
+            if not headlines:
+                st.caption("No headlines available right now.")
+            for h in headlines:
+                st.markdown(f"[{h['title']}]({h['url']})")
+                st.caption(f"Source: {h['source']} · {time_ago(h['published'], now_utc)}")
+
+    st.divider()
+    st.subheader("📁 Your Portfolio News")
+    st.caption(
+        "Recent headlines for each open position in your uploaded portfolio, pulled from Yahoo Finance's "
+        "per-security news feed — this section is generic and adapts automatically to whatever's in your CSV."
+    )
+
+    news_tickers = sorted(open_positions.keys())
+    if not news_tickers:
+        st.info("No open positions to show news for.")
+    else:
+
+        def _ticker_label(t: str) -> str:
+            name = company_names.get(t, t)
+            return f"{t} — {name}" if name != t else t
+
+        ALL_HOLDINGS = "All holdings"
+        choice = st.selectbox(
+            "Filter by holding",
+            [ALL_HOLDINGS] + news_tickers,
+            format_func=lambda t: t if t == ALL_HOLDINGS else _ticker_label(t),
+        )
+        tickers_to_show = news_tickers if choice == ALL_HOLDINGS else [choice]
+        per_ticker_count = 3 if choice == ALL_HOLDINGS else 8
+
+        found_any = False
+        for ticker in tickers_to_show:
+            if ticker in open_bond_tickers:
+                st.markdown(f"**{_ticker_label(ticker)}**")
+                st.caption(
+                    "No news feed available for bonds — Yahoo Finance doesn't index bond CUSIPs/ISINs. "
+                    "Try the Economy Overview above, or search the issuer/benchmark directly."
+                )
+                continue
+            headlines = get_ticker_news(ticker, count=per_ticker_count)
+            if not headlines:
+                continue
+            found_any = True
+            st.markdown(f"**{_ticker_label(ticker)}**")
+            for h in headlines:
+                st.markdown(f"[{h['title']}]({h['url']})")
+                st.caption(f"Source: {h['source']} · {time_ago(h['published'], now_utc)}")
+
+        if not found_any and not all(t in open_bond_tickers for t in tickers_to_show):
+            st.info("No recent news found for the selected holding(s).")
 
 with tab_detail:
     all_tickers = sorted(set(positions.keys()) - set(bond_positions))
