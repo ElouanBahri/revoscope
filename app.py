@@ -30,6 +30,7 @@ from revoscope.news import (
     FOMC_SOURCE_URL,
     get_ecb_deposit_rate,
     get_fed_funds_target_range,
+    get_fed_meeting_probabilities,
     get_ticker_news,
     next_meeting,
     search_news,
@@ -484,6 +485,50 @@ with tab_news:
     )
     ecb_short, ecb_delta, ecb_full = _meeting_label(next_ecb)
     m4.metric("Next ECB Meeting", ecb_short, ecb_delta, help=ecb_full)
+
+    fed_odds = get_fed_meeting_probabilities(next_fomc, fed_rate)
+    if fed_odds:
+        avg = fed_odds["average"]
+        st.markdown(f"**Fed Rate Decision Odds — {fomc_short} Meeting**")
+        odds_fig = go.Figure()
+        for name, value, color in [
+            ("Cut 25bp+", avg["cut"], "#636EFA"),
+            ("Hold", avg["hold"], "#9AA0A6"),
+            ("Hike 25bp+", avg["hike"], "#EF553B"),
+        ]:
+            odds_fig.add_trace(
+                go.Bar(
+                    y=["Odds"],
+                    x=[value],
+                    name=name,
+                    orientation="h",
+                    marker_color=color,
+                    text=f"{value:.0f}%" if value >= 6 else "",
+                    textposition="inside",
+                    insidetextfont=dict(color="white"),
+                    hovertemplate=f"{name}: %{{x:.1f}}%<extra></extra>",
+                )
+            )
+        odds_fig.update_layout(
+            barmode="stack",
+            height=90,
+            margin=dict(l=0, r=0, t=0, b=0),
+            legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="left", x=0),
+            xaxis=dict(visible=False, range=[0, 100]),
+            yaxis=dict(visible=False),
+        )
+        st.plotly_chart(style_fig(odds_fig), use_container_width=True, config={"displayModeBar": False})
+        per_source = " · ".join(
+            f"[{s['source_name']}]({s['source_url']}) — cut {s['cut']:.0f}% / hold {s['hold']:.0f}% / hike {s['hike']:.0f}%"
+            for s in fed_odds["sources"]
+        )
+        st.caption(
+            f"Average of {len(fed_odds['sources'])} live source(s) — CME's own Fed Funds futures (what CME's "
+            f"FedWatch tool and Bloomberg's Fed-o-meter are themselves built on) plus real-money prediction "
+            f"markets, no paid feed required: {per_source}."
+        )
+    else:
+        st.caption("Fed rate-move odds unavailable right now — prediction-market sources didn't respond.")
 
     source_bits = []
     if fed_rate:

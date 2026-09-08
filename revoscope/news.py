@@ -19,6 +19,7 @@ are maintained by hand from the official sources linked next to them.
 from __future__ import annotations
 
 import io
+import json
 
 import pandas as pd
 import requests
@@ -106,6 +107,8 @@ def get_fed_funds_target_range() -> dict | None:
     lower_value, _ = lower
     return {
         "display": f"{lower_value:.2f}% – {upper_value:.2f}%",
+        "upper": upper_value,
+        "lower": lower_value,
         "as_of": as_of,
         "source_name": "FRED · Federal Reserve Bank of St. Louis",
         "source_url": "https://fred.stlouisfed.org/series/DFEDTARU",
@@ -125,6 +128,180 @@ def get_ecb_deposit_rate() -> dict | None:
         "source_name": "FRED · Federal Reserve Bank of St. Louis",
         "source_url": "https://fred.stlouisfed.org/series/ECBDFR",
     }
+
+
+POLYMARKET_EVENTS_URL = "https://gamma-api.polymarket.com/events"
+KALSHI_MARKETS_URL = "https://api.elections.kalshi.com/trade-api/v2/markets"
+CME_FEDWATCH_URL = "https://www.cmegroup.com/markets/interest-rates/stirs/30-day-federal-fund.html"
+_CME_FED_FUNDS_MONTH_CODES = {1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M", 7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z"}
+
+# There's no free, no-key equivalent of a subscription feed like Bloomberg's
+# Fed-o-meter, so this uses the same underlying data those feeds are built
+# on: CME's own Fed Funds futures (the same market CME's FedWatch tool and
+# most financial-media "Fed odds" charts derive from) plus two live,
+# real-money prediction markets pricing the next FOMC decision.
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _cme_fedwatch_probabilities(
+    meeting_start: pd.Timestamp, meeting_end: pd.Timestamp, current_lower: float, current_upper: float
+) -> dict | None:
+    """Hike/hold/cut probability for the next FOMC meeting implied by CME's
+    30-Day Fed Funds futures (ticker ZQ<month code><year>, read from Yahoo
+    Finance via yfinance — no key required) — this is what CME's own
+    FedWatch tool is built on, and the reference most financial media (incl.
+    Bloomberg's Fed-o-meter) actually cite.
+
+    A Fed Funds future settles at 100 minus the average effective rate over
+    its delivery month, so the contract covering the meeting month blends
+    the pre-meeting and post-meeting rate, weighted by days at each. Solving
+    for the post-meeting rate and comparing it to today's rate gives the
+    implied probability of a 25bp move, assuming — as FedWatch does close to
+    a meeting — the market prices at most one 25bp step either way. Returns
+    None if the contract can't be resolved or has no recent price."""
+    code = _CME_FED_FUNDS_MONTH_CODES.get(meeting_start.month)
+    if code is None:
+        return None
+    ticker = f"ZQ{code}{meeting_start.strftime('%y')}.CBT"
+    try:
+        history = yf.Ticker(ticker).history(period="5d")
+        if history.empty:
+            return None
+        price = float(history["Close"].iloc[-1])
+    except Exception:
+        return None
+
+    implied_avg_rate = 100 - price
+    pre_rate = (current_lower + current_upper) / 2
+    days_in_month = meeting_start.days_in_month
+    days_before = min(meeting_end.day, days_in_month - 1)
+    days_after = days_in_month - days_before
+    post_rate = (implied_avg_rate * days_in_month - pre_rate * days_before) / days_after
+    move = post_rate - pre_rate
+
+    hike = max(0.0, min(1.0, move / 0.25)) * 100
+    cut = max(0.0, min(1.0, -move / 0.25)) * 100
+    hold = max(0.0, 100 - hike - cut)
+    return {
+        "source_name": "CME FedWatch (Fed funds futures)",
+        "source_url": CME_FEDWATCH_URL,
+        "hike": hike,
+        "hold": hold,
+        "cut": cut,
+    }
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _polymarket_fed_probabilities(meeting_month: str) -> dict | None:
+    """Hike/hold/cut probability for the next FOMC meeting from Polymarket's
+    "Fed Decision in <Month>?" market — a real-money prediction market read
+    via Polymarket's public Gamma API (no key required). Returns None if the
+    market can't be found or fetched."""
+    try:
+        resp = requests.get(
+            POLYMARKET_EVENTS_URL,
+            params={"tag_slug": "fed", "closed": "false", "limit": 50},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        events = resp.json()
+    except Exception:
+        return None
+    target_title = f"Fed Decision in {meeting_month}?"
+    event = next((e for e in events if e.get("title") == target_title), None)
+    if event is None:
+        return None
+    hike = hold = cut = 0.0
+    for market in event.get("markets", []):
+        label = (market.get("groupItemTitle") or "").lower()
+        try:
+            yes_price = float(json.loads(market.get("outcomePrices") or "[]")[0])
+        except Exception:
+            continue
+        if "increase" in label:
+            hike += yes_price
+        elif "decrease" in label:
+            cut += yes_price
+        elif "no change" in label:
+            hold += yes_price
+    total = hike + hold + cut
+    if total <= 0:
+        return None
+    return {
+        "source_name": "Polymarket",
+        "source_url": f"https://polymarket.com/event/{event.get('slug')}",
+        "hike": hike / total * 100,
+        "hold": hold / total * 100,
+        "cut": cut / total * 100,
+    }
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _kalshi_fed_probabilities(event_ticker: str, current_upper: float) -> dict | None:
+    """Hike/hold/cut probability for the next FOMC meeting from Kalshi's
+    "Fed funds rate after <meeting>" strike ladder — a CFTC-regulated
+    prediction market read via Kalshi's public markets API (no key required
+    for market data). Each strike prices P(target-range upper bound above
+    that level); hike/hold/cut fall out of the two strikes adjacent to the
+    current upper bound. Returns None if those strikes aren't found."""
+    try:
+        resp = requests.get(KALSHI_MARKETS_URL, params={"event_ticker": event_ticker}, timeout=10)
+        resp.raise_for_status()
+        markets = resp.json().get("markets", [])
+    except Exception:
+        return None
+
+    def _prob_above(strike: float) -> float | None:
+        for m in markets:
+            if abs(m.get("floor_strike", -1e9) - strike) < 1e-6:
+                try:
+                    return (float(m["yes_bid_dollars"]) + float(m["yes_ask_dollars"])) / 2 * 100
+                except Exception:
+                    return None
+        return None
+
+    p_hike = _prob_above(current_upper)
+    p_above_cut_level = _prob_above(round(current_upper - 0.25, 2))
+    if p_hike is None or p_above_cut_level is None:
+        return None
+    p_cut = max(0.0, 100 - p_above_cut_level)
+    p_hold = max(0.0, 100 - p_hike - p_cut)
+    return {
+        "source_name": "Kalshi",
+        "source_url": f"https://kalshi.com/markets/kxfed/fed-funds-rate#{event_ticker.lower()}",
+        "hike": p_hike,
+        "hold": p_hold,
+        "cut": p_cut,
+    }
+
+
+def get_fed_meeting_probabilities(next_fomc: tuple[pd.Timestamp, pd.Timestamp] | None, fed_rate: dict | None) -> dict | None:
+    """Hike/hold/cut probability for the next FOMC meeting, averaged across
+    independent live sources — CME Fed Funds futures (FedWatch's own
+    methodology) plus two real-money prediction markets — rather than
+    relying on any single one. Returns {"sources": [...], "average": {...}}
+    with whichever sources responded, or None if every source failed or
+    inputs are unavailable."""
+    if next_fomc is None or fed_rate is None or fed_rate.get("upper") is None:
+        return None
+    start, end = next_fomc
+    sources = []
+    cme = _cme_fedwatch_probabilities(start, end, fed_rate["lower"], fed_rate["upper"])
+    if cme:
+        sources.append(cme)
+    poly = _polymarket_fed_probabilities(start.strftime("%B"))
+    if poly:
+        sources.append(poly)
+    kalshi = _kalshi_fed_probabilities(f"KXFED-{start.strftime('%y%b').upper()}", fed_rate["upper"])
+    if kalshi:
+        sources.append(kalshi)
+    if not sources:
+        return None
+    average = {
+        outcome: sum(s[outcome] for s in sources) / len(sources)
+        for outcome in ("hike", "hold", "cut")
+    }
+    return {"sources": sources, "average": average}
 
 
 def _normalize_search_item(raw: dict) -> dict | None:
